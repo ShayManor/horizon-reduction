@@ -634,3 +634,27 @@ class ActorVectorField(nn.Module):
         v = self.mlp(inputs)
 
         return v
+
+
+class GCMetric(nn.Module):
+    """Learned anisotropic metric tensor M(s) = scale*I + U U^T.
+
+    Outputs a low-rank factor U(s) so the cost is:
+        c(s, w) = sqrt( delta^T M(s) delta )
+    where delta = w - s, M = scale*I + U U^T.
+    """
+    hidden_dims: Sequence[int]
+    state_dim: int
+    rank: int = 8
+    layer_norm: bool = True
+
+    def setup(self):
+        self.trunk = MLP(self.hidden_dims, activate_final=True, layer_norm=self.layer_norm)
+        self.U_head = nn.Dense(self.state_dim * self.rank, kernel_init=default_init(0.01))
+        self.log_scale = self.param('log_scale', nn.initializers.zeros, ())
+
+    def __call__(self, observations):
+        h = self.trunk(observations)
+        U = self.U_head(h).reshape(*observations.shape[:-1], self.state_dim, self.rank)
+        scale = jax.nn.softplus(self.log_scale) + 0.01
+        return U, scale
