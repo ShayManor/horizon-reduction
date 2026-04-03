@@ -8,6 +8,7 @@ from agents.hgcfbc import HGCFBCAgent
 from agents.hiql import HIQLAgent
 from agents.ngcsacbc import NGCSACBCAgent
 from agents.sharsa import SHARSAAgent
+from agents.sharsa_geodesic import SHARSAGeodesicAgent
 
 agents = dict(
     crl=CRLAgent,
@@ -20,4 +21,5 @@ agents = dict(
     hiql=HIQLAgent,
     ngcsacbc=NGCSACBCAgent,
     sharsa=SHARSAAgent,
+    sharsa_geodesic=SHARSAGeodesicAgent,
 )
