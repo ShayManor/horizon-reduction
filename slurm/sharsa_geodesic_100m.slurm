@@ -14,7 +14,7 @@ set -euo pipefail
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
 export BASE=/scratch/gautschi/manors/ogbench
-export HR_DIR=/scratch/gautschi/manors/horizon-reduction
+export HR_DIR=$HOME/horizon-reduction
 export PYTHONPATH="$HR_DIR:${PYTHONPATH:-}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export MUJOCO_GL=egl
