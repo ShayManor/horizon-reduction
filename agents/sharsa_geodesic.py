@@ -393,9 +393,9 @@ def get_config():
             use_anisotropic=True,
             metric_hidden_dims=(512, 512),
             metric_rank=8,
-            kappa=0.1,  # isotropic fallback cost scale
-            tightness_threshold=0.5,
-            w_geo=0.1,  # overall weight of geodesic loss
+            kappa=0.01,  # isotropic fallback cost scale
+            tightness_threshold=0.2,
+            w_geo=0.5,  # overall weight of geodesic loss
             w_hjb=1.0,
             w_tight=0.5,
             w_multi=0.5,
