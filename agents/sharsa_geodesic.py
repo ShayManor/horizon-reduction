@@ -132,7 +132,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         """Anisotropic geodesic HJB regularization."""
         obs = batch['observations']  # (B, D)
         goals = batch['high_value_goals']  # (B, G)
-        w = batch['high_value_actions']  # (B, D) subgoal states
+        w = batch['high_value_next_observations']  # (B, obs_dim)
 
         # --- Value at s and w ---
         v_s = self.network.select('high_value')(obs, goals, params=grad_params)
@@ -143,7 +143,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
             v_w = jax.nn.sigmoid(v_w)
 
         # --- Anisotropic cost c(s, w) ---
-        delta = w - obs  # (B, D)
+        delta = w - obs  # (B, obs_dim)
 
         if self.config['use_anisotropic']:
             U, scale = self.network.select('metric')(obs, params=grad_params)
