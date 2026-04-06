@@ -1,0 +1,17 @@
+python main.py \
+  --run_group=baseline_sharsa_p45_100m \
+  --seed=0 \
+  --env_name=puzzle-4x5-play-oraclerep-v0 \
+  --dataset_dir="$BASE/puzzle-4x5-play-100m-v0" \
+  --dataset_replace_interval=1000 \
+  --agent=agents/sharsa.py \
+  --agent.q_agg=min \
+  --agent.subgoal_steps=25 \
+  --agent.actor_p_trajgoal=0.5 \
+  --agent.actor_p_randomgoal=0.5 \
+  --agent.actor_geom_sample=True \
+  --offline_steps=1000000 \
+  --eval_interval=250000 \
+  --save_interval=500000 \
+  --log_interval=50000 \
+  --video_episodes=0

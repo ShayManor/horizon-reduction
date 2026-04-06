@@ -390,7 +390,7 @@ def get_config():
             gc_negative=False,
 
             # Geodesic HJB hyperparams
-            use_anisotropic=True,
+            use_anisotropic=False,
             metric_hidden_dims=(512, 512),
             metric_rank=8,
             kappa=0.01,  # isotropic fallback cost scale
