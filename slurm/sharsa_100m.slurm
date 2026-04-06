@@ -1,3 +1,31 @@
+#!/bin/bash -l
+#SBATCH --job-name=sgeo_p45_100m
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=64
+#SBATCH --time=04:00:00
+#SBATCH -A lilly-rob1
+#SBATCH -p smallgpu
+#SBATCH --gres=gpu:1
+#SBATCH -o /scratch/gautschi/manors/logs/sgeo_p45_100m_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/sgeo_p45_100m_%j.err
+set -euo pipefail
+
+source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
+
+export BASE=/scratch/gautschi/manors/ogbench
+export HR_DIR=$HOME/horizon-reduction
+export PYTHONPATH="$HR_DIR:${PYTHONPATH:-}"
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+unset DISPLAY
+unset JAX_PLATFORMS
+unset JAX_PLATFORM_NAME
+
+mkdir -p /scratch/gautschi/manors/logs
+cd "$HR_DIR"
+
 python main.py \
   --run_group=baseline_sharsa_p45_100m \
   --seed=0 \
