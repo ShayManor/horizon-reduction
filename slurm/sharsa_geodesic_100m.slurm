@@ -39,7 +39,7 @@ python main.py \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
   --agent.use_anisotropic=False \
-  --agent.w_geo=0.5 \
+  --agent.w_geo=0.1 \
   --agent.metric_rank=8 \
   --offline_steps=1000000 \
   --eval_interval=250000 \

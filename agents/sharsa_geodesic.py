@@ -374,7 +374,6 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 def get_config():
     config = ml_collections.ConfigDict(
         dict(
-            # --- Original SHARSA hyperparams (copy all from sharsa.py) ---
             agent_name='sharsa_geodesic',
             lr=3e-4,
             batch_size=1024,

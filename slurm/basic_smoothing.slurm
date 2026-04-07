@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=sgeo_p45_100m
+#SBATCH --job-name=sharsa_smoothing_100m
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
