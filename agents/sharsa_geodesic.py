@@ -138,6 +138,18 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         v_s = self.network.select('high_value')(obs, goals, params=grad_params)
         v_w = self.network.select('high_value')(w, goals, params=grad_params)
 
+        if self.config['basic_smoothing']:
+            loss_smooth = jnp.square(v_w - v_s).mean()
+            return loss_smooth, {
+                'geo_loss': loss_smooth,
+                'loss_hjb': 0.0,
+                'loss_tight': 0.0,
+                'loss_multi': 0.0,
+                'loss_metric_reg': 0.0,
+                'hjb_residual_mean': 0.0,
+                'cost_mean': 0.0,
+            }
+
         if self.config['value_loss_type'] == 'bce':
             v_s = jax.nn.sigmoid(v_s)
             v_w = jax.nn.sigmoid(v_w)
@@ -390,6 +402,7 @@ def get_config():
             gc_negative=False,
 
             # Geodesic HJB hyperparams
+            basic_smoothing=False,
             use_anisotropic=False,
             metric_hidden_dims=(512, 512),
             metric_rank=8,
