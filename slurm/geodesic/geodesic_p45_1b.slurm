@@ -40,6 +40,7 @@ python main.py \
   --agent.actor_geom_sample=True \
   --agent.use_anisotropic=False \
   --agent.w_geo=1.0 \
+  --agent.tightness_threshold=0.2 \
   --agent.metric_rank=8 \
   --offline_steps=1000000 \
   --eval_interval=250000 \
