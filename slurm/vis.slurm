@@ -29,7 +29,7 @@ cd "$HR_DIR"
 RESTORE_PATH="exp/horizon-reduction/geo_aniso_ant_100m_dev/*"
 RESTORE_EPOCH=1000000
 
-ENV_NAME="antmaze-medium-navigate-oraclerep-v0"
+ENV_NAME="antmaze-medium-navigate-v0"
 DATASET_DIR="$BASE/antmaze-medium-navigate-100m-v0"
 
 AGENT_CONFIG="agents/sharsa_geodesic.py"

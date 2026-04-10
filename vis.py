@@ -23,7 +23,7 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_string('run_group', 'Debug', 'Run group.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
-flags.DEFINE_string('env_name', 'antmaze-medium-navigate-oraclerep-v0', 'Environment name.')
+flags.DEFINE_string('env_name', 'antmaze-medium-navigate-v0', 'Environment name.')
 flags.DEFINE_string('dataset_dir', None, 'Dataset directory.')
 flags.DEFINE_integer('dataset_replace_interval', 1000, 'Dataset replace interval.')
 flags.DEFINE_integer('num_datasets', None, 'Number of datasets.')
