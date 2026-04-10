@@ -50,6 +50,7 @@ python vis.py \
   --agent.basic_smoothing=True \
   --agent.w_geo=0.5 \
   --restore_path="exp/horizon-reduction/geo_aniso_ant_100m_dev/sd000_*" \
+  --title=basic_smoothing \
   $COMMON
 
 # Geodesic (isotropic)
@@ -61,6 +62,7 @@ python vis.py \
   --agent.use_anisotropic=False \
   --agent.w_geo=1.0 \
   --restore_path="exp/horizon-reduction/geo_aniso_ant_100m_dev/sd000_*" \
+  --title=sharsa_geodesic \
   $COMMON
 
 echo "=== All visualizations complete ==="

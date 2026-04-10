@@ -32,6 +32,7 @@ flags.DEFINE_string('restore_path', None, 'Restore path.')
 flags.DEFINE_integer('restore_epoch', None, 'Restore epoch (None = auto-detect latest).')
 flags.DEFINE_integer('grid_size', 100, 'Grid resolution.')
 flags.DEFINE_integer('goal_idx', -1, 'Index of goal state in dataset (-1 = random terminal).')
+flags.DEFINE_string('title', None, 'Plot title override (default: agent_name from config).')
 
 # Dummy flags expected by main.py-style configs
 flags.DEFINE_integer('offline_steps', 0, '')
@@ -235,8 +236,8 @@ def vis_value_function(env, agent, dataset, config):
     ax.set_aspect('equal')
     # ax.set_xlabel('x')
     # ax.set_ylabel('y')
-    agent_name = config.get('agent_name', 'sharsa')
-    ax.set_title(f"{agent_name}")
+    title = FLAGS.title if FLAGS.title else config.get('agent_name', 'sharsa')
+    ax.set_title(title)
     # ax.legend(loc='upper right')
 
     # Save
