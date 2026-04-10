@@ -282,18 +282,30 @@ def main(_):
     agent_class = agents[config['agent_name']]
     agent = agent_class.create(FLAGS.seed, example_batch, config)
 
-    # Auto-detect restore_epoch if not provided
+    # Resolve restore path: pick the run with the highest checkpoint epoch.
     restore_epoch = FLAGS.restore_epoch
+    candidates = glob.glob(FLAGS.restore_path)
+    assert candidates, f'No candidates found for {FLAGS.restore_path}'
+
+    best_path = None
+    best_epoch = -1
+    for cand in candidates:
+        pkl_files = glob.glob(os.path.join(cand, 'params_*.pkl'))
+        if not pkl_files:
+            continue
+        top = max(int(os.path.basename(f).replace('params_', '').replace('.pkl', '')) for f in pkl_files)
+        if top > best_epoch:
+            best_epoch = top
+            best_path = cand
+
+    assert best_path is not None, f'No params_*.pkl found in any candidate: {candidates}'
+    print(f"Selected run: {best_path} (epoch {best_epoch})")
+
     if restore_epoch is None:
-        candidates = glob.glob(FLAGS.restore_path)
-        assert len(candidates) == 1, f'Found {len(candidates)} candidates: {candidates}'
-        pkl_files = glob.glob(os.path.join(candidates[0], 'params_*.pkl'))
-        assert pkl_files, f'No params_*.pkl found in {candidates[0]}'
-        epochs = [int(os.path.basename(f).replace('params_', '').replace('.pkl', '')) for f in pkl_files]
-        restore_epoch = max(epochs)
+        restore_epoch = best_epoch
         print(f"Auto-detected latest checkpoint: epoch {restore_epoch}")
 
-    agent = restore_agent(agent, FLAGS.restore_path, restore_epoch)
+    agent = restore_agent(agent, best_path, restore_epoch)
 
     # ── Visualize ──
     vis_value_function(env, agent, raw_dict, config)
