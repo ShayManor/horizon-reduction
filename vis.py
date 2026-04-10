@@ -230,14 +230,14 @@ def vis_value_function(env, agent, dataset, config):
     # Colorbar
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="5%", pad=0.05)
-    plt.colorbar(contour, cax=cax, label="Value (Goal-conditioned)")
+    plt.colorbar(contour, cax=cax, label="Goal-conditioned Value")
 
     ax.set_aspect('equal')
-    ax.set_xlabel('x')
-    ax.set_ylabel('y')
+    # ax.set_xlabel('x')
+    # ax.set_ylabel('y')
     agent_name = config.get('agent_name', 'sharsa')
-    ax.set_title(f"{agent_name}: V(s, g) — {FLAGS.env_name}")
-    ax.legend(loc='upper right')
+    ax.set_title(f"{agent_name}")
+    # ax.legend(loc='upper right')
 
     # Save
     save_dir = Path(FLAGS.save_dir)
