@@ -41,7 +41,7 @@ AGENT_CONFIG="agents/sharsa_geodesic.py"
 # AGENT_CONFIG="agents/sharsa.py"
 
 # ─── RUN ───
-python vis_sharsa.py \
+python vis.py \
   --env_name="$ENV_NAME" \
   --dataset_dir="$DATASET_DIR" \
   --agent="$AGENT_CONFIG" \
