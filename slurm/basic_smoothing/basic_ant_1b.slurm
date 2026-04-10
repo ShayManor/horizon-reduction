@@ -27,7 +27,7 @@ mkdir -p /scratch/gautschi/manors/logs
 cd "$HR_DIR"
 
 python main.py \
-  --run_group=geo_aniso_ant_1b_dev \
+  --run_group=basic_smoothing_ant_1b \
   --seed=0 \
   --env_name=antmaze-medium-navigate-v0 \
   --dataset_dir="$BASE/antmaze-medium-navigate-1b-v0" \

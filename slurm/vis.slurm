@@ -49,7 +49,7 @@ python vis.py \
   --agent.subgoal_steps=25 \
   --agent.basic_smoothing=True \
   --agent.w_geo=0.5 \
-  --restore_path="exp/horizon-reduction/geo_aniso_ant_100m_dev/sd000_*" \
+  --restore_path="exp/horizon-reduction/basic_smoothing_ant_100m/sd000_*" \
   --title=basic_smoothing \
   $COMMON
 

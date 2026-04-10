@@ -27,7 +27,7 @@ mkdir -p /scratch/gautschi/manors/logs
 cd "$HR_DIR"
 
 python main.py \
-  --run_group=geo_aniso_p45_1b_dev \
+  --run_group=basic_smoothing_p45_1b \
   --seed=0 \
   --env_name=puzzle-4x5-play-oraclerep-v0 \
   --dataset_dir="$BASE/puzzle-4x5-play-1b-v0" \
