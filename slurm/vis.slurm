@@ -1,13 +1,13 @@
 #!/bin/bash -l
-#SBATCH --job-name=vis_sharsa
+#SBATCH --job-name=vis_all
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
 #SBATCH --time=01:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmem
-#SBATCH -o /scratch/gautschi/manors/logs/vis_sharsa_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/vis_sharsa_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/vis_all_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/vis_all_%j.err
 set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
@@ -26,22 +26,42 @@ mkdir -p /scratch/gautschi/manors/logs
 mkdir -p "$HR_DIR/plots"
 cd "$HR_DIR"
 
-RESTORE_PATH="exp/horizon-reduction/geo_aniso_ant_100m_dev/*"
-RESTORE_EPOCH=1000000
-
 ENV_NAME="antmaze-medium-navigate-v0"
 DATASET_DIR="$BASE/antmaze-medium-navigate-100m-v0"
 
-AGENT_CONFIG="agents/sharsa_geodesic.py"
+GOAL_IDX=42
+COMMON="--env_name=$ENV_NAME --dataset_dir=$DATASET_DIR --grid_size=100 --goal_idx=$GOAL_IDX --save_dir=plots/"
 
+# Baseline SHARSA
+echo "=== Visualizing: Baseline SHARSA ==="
 python vis.py \
-  --env_name="$ENV_NAME" \
-  --dataset_dir="$DATASET_DIR" \
-  --agent="$AGENT_CONFIG" \
+  --agent=agents/sharsa.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
-  --restore_path="$RESTORE_PATH" \
-  --restore_epoch=$RESTORE_EPOCH \
-  --grid_size=100 \
-  --goal_idx=-1 \
-  --save_dir=plots/
+  --restore_path="exp/horizon-reduction/baseline_sharsa_ant_100m/*" \
+  $COMMON
+
+# Basic Smoothing
+echo "=== Visualizing: Basic Smoothing ==="
+python vis.py \
+  --agent=agents/sharsa_geodesic.py \
+  --agent.q_agg=min \
+  --agent.subgoal_steps=25 \
+  --agent.basic_smoothing=True \
+  --agent.w_geo=0.5 \
+  --restore_path="exp/horizon-reduction/geo_aniso_ant_100m_dev/sd000_*" \
+  $COMMON
+
+# Geodesic (isotropic)
+echo "=== Visualizing: Geodesic Isotropic ==="
+python vis.py \
+  --agent=agents/sharsa_geodesic.py \
+  --agent.q_agg=min \
+  --agent.subgoal_steps=25 \
+  --agent.use_anisotropic=False \
+  --agent.w_geo=1.0 \
+  --restore_path="exp/horizon-reduction/geo_aniso_ant_100m_dev/sd000_*" \
+  $COMMON
+
+echo "=== All visualizations complete ==="
+ls -la plots/*.png
