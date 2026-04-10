@@ -2,11 +2,10 @@
 #SBATCH --job-name=vis_sharsa
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=96
 #SBATCH --time=00:30:00
 #SBATCH -A lilly-rob1
-#SBATCH -p smallgpu
-#SBATCH --gres=gpu:1
+#SBATCH -p highmem
 #SBATCH -o /scratch/gautschi/manors/logs/vis_sharsa_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/vis_sharsa_%j.err
 set -euo pipefail
@@ -19,8 +18,8 @@ export PYTHONPATH="$HR_DIR:${PYTHONPATH:-}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
+export JAX_PLATFORMS=cpu
 unset DISPLAY
-unset JAX_PLATFORMS
 unset JAX_PLATFORM_NAME
 
 mkdir -p /scratch/gautschi/manors/logs
