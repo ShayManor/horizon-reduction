@@ -243,8 +243,8 @@ def vis_value_function(env, agent, dataset, config):
     # Save
     save_dir = Path(FLAGS.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    restore_name = Path(FLAGS.restore_path).name if FLAGS.restore_path else "unknown"
-    save_path = save_dir / f"{restore_name}_value_goal{goal_data_idx}.png"
+    save_name = title
+    save_path = save_dir / f"{save_name}_value_goal{goal_data_idx}.png"
     plt.savefig(save_path, dpi=200, bbox_inches='tight')
     plt.close()
     print(f"Saved to {save_path}")
