@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=sharsa_p45_100m
+#SBATCH --job-name=sharsa_smoothing_ant_100m
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
@@ -7,8 +7,8 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/sgeo_p45_100m_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/sgeo_p45_100m_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/sgeo_ant_100m_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/sgeo_ant_100m_%j.err
 set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
@@ -27,17 +27,20 @@ mkdir -p /scratch/gautschi/manors/logs
 cd "$HR_DIR"
 
 python main.py \
-  --run_group=baseline_sharsa_p45_100m \
+  --run_group=geo_aniso_ant_100m_dev \
   --seed=0 \
-  --env_name=puzzle-4x5-play-oraclerep-v0 \
-  --dataset_dir="$BASE/puzzle-4x5-play-100m-v0" \
+  --env_name=antmaze-medium-navigate-v0 \
+  --dataset_dir="$BASE/antmaze-medium-navigate-100m-v0" \
   --dataset_replace_interval=1000 \
-  --agent=agents/sharsa.py \
+  --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
+  --agent.basic_smoothing=True \
+  --agent.w_geo=0.5 \
+  --agent.metric_rank=8 \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
