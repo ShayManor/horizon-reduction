@@ -326,6 +326,12 @@ class HGCDataset(GCDataset):
             batch['high_value_next_observations'] = self.get_observations(high_value_next_idxs)
         batch['high_value_offsets'] = high_value_goal_idxs - idxs
 
+        # Goal type: 0 = curgoal, 1 = trajgoal, 2 = randomgoal.
+        # curgoal: goal idx == current idx. trajgoal: goal idx is on the same trajectory ahead. Else random.
+        cur_mask = (high_value_goal_idxs == idxs)
+        traj_mask = (~cur_mask) & (high_value_goal_idxs > idxs) & (high_value_goal_idxs <= final_state_idxs)
+        batch['high_value_goal_type'] = np.where(cur_mask, 0, np.where(traj_mask, 1, 2)).astype(np.int32)
+
         high_value_successes = (high_value_subgoal_steps < value_subgoal_steps).astype(float)
         batch['high_value_subgoal_steps'] = high_value_subgoal_steps
         batch['high_value_masks'] = 1.0 - high_value_successes

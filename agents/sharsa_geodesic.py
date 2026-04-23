@@ -25,6 +25,10 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         loss = -(log_pred * target + log_not_pred * (1 - target))
         return loss
 
+    @staticmethod
+    def _masked_mean(x, mask):
+        return jnp.sum(x * mask) / (jnp.sum(mask) + 1e-6)
+
     def high_value_loss(self, batch, grad_params):
         """Compute the high-level SARSA value loss."""
         q1, q2 = self.network.select('target_high_critic')(
@@ -48,11 +52,27 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         elif self.config['value_loss_type'] == 'bce':
             value_loss = (self.bce_loss(v_logit, q)).mean()
 
+        goal_type = batch['high_value_goal_type']
+        cur_mask = (goal_type == 0).astype(jnp.float32)
+        traj_mask = (goal_type == 1).astype(jnp.float32)
+        rand_mask = (goal_type == 2).astype(jnp.float32)
+
         return value_loss, {
             'value_loss': value_loss,
             'v_mean': v.mean(),
+            'v_std': v.std(),
             'v_max': v.max(),
             'v_min': v.min(),
+            'v_mean_cur': self._masked_mean(v, cur_mask),
+            'v_mean_traj': self._masked_mean(v, traj_mask),
+            'v_mean_rand': self._masked_mean(v, rand_mask),
+            'q_mean_cur': self._masked_mean(q, cur_mask),
+            'q_mean_traj': self._masked_mean(q, traj_mask),
+            'q_mean_rand': self._masked_mean(q, rand_mask),
+            'v_minus_q_mean': (v - q).mean(),
+            'frac_cur': cur_mask.mean(),
+            'frac_traj': traj_mask.mean(),
+            'frac_rand': rand_mask.mean(),
         }
 
     def high_critic_loss(self, batch, grad_params):
@@ -60,10 +80,9 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         next_v = self.network.select('high_value')(batch['high_value_next_observations'], batch['high_value_goals'])
         if self.config['value_loss_type'] == 'bce':
             next_v = jax.nn.sigmoid(next_v)
-        q = (
-                batch['high_value_rewards']
-                + (self.config['discount'] ** batch['high_value_subgoal_steps']) * batch['high_value_masks'] * next_v
-        )
+        discount_k = self.config['discount'] ** batch['high_value_subgoal_steps']
+        bootstrap = discount_k * batch['high_value_masks'] * next_v
+        q = batch['high_value_rewards'] + bootstrap
 
         q1, q2 = self.network.select('high_critic')(
             batch['observations'], batch['high_value_goals'], batch['high_value_actions'], params=grad_params
@@ -75,11 +94,25 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
             q1_logit, q2_logit = q1, q2
             critic_loss = self.bce_loss(q1_logit, q).mean() + self.bce_loss(q2_logit, q).mean()
 
+        goal_type = batch['high_value_goal_type']
+        cur_mask = (goal_type == 0).astype(jnp.float32)
+        traj_mask = (goal_type == 1).astype(jnp.float32)
+        rand_mask = (goal_type == 2).astype(jnp.float32)
+
         return critic_loss, {
             'critic_loss': critic_loss,
             'q_mean': q.mean(),
+            'q_std': q.std(),
             'q_max': q.max(),
             'q_min': q.min(),
+            'reward_mean': batch['high_value_rewards'].mean(),
+            'bootstrap_mean': bootstrap.mean(),
+            'next_v_mean': next_v.mean(),
+            'success_frac': (1.0 - batch['high_value_masks']).mean(),
+            'discount_k_mean': discount_k.mean(),
+            'q_target_mean_traj': self._masked_mean(q, traj_mask),
+            'q_target_mean_rand': self._masked_mean(q, rand_mask),
+            'q_target_mean_cur': self._masked_mean(q, cur_mask),
         }
 
     def high_actor_loss(self, batch, grad_params, rng=None):
@@ -129,96 +162,154 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         return actor_loss, actor_info
 
     def geodesic_hjb_loss(self, batch, grad_params):
-        """Anisotropic geodesic HJB regularization."""
+        """Geodesic HJB / basic-smoothing regularization with unified diagnostics."""
         obs = batch['observations']  # (B, D)
         goals = batch['high_value_goals']  # (B, G)
         w = batch['high_value_next_observations']  # (B, obs_dim)
 
-        # --- Value at s and w ---
-        v_s = self.network.select('high_value')(obs, goals, params=grad_params)
-        v_w = self.network.select('high_value')(w, goals, params=grad_params)
+        # --- Value at s and w (logits if bce) ---
+        v_s_raw = self.network.select('high_value')(obs, goals, params=grad_params)
+        v_w_raw = self.network.select('high_value')(w, goals, params=grad_params)
 
+        if self.config['value_loss_type'] == 'bce':
+            v_s = jax.nn.sigmoid(v_s_raw)
+            v_w = jax.nn.sigmoid(v_w_raw)
+        else:
+            v_s = v_s_raw
+            v_w = v_w_raw
+
+        # --- Cost c(s, w) (always computed for diagnostics) ---
+        delta = w - obs  # (B, obs_dim)
+        delta_norm = jnp.linalg.norm(delta, axis=-1)
+
+        if self.config['use_anisotropic']:
+            U, scale = self.network.select('metric')(obs, params=grad_params)
+            Ut_delta = jnp.einsum('...dr,...d->...r', U, delta)
+            sq_dist = scale * jnp.sum(delta ** 2, axis=-1) + jnp.sum(Ut_delta ** 2, axis=-1)
+            cost = jnp.sqrt(sq_dist + 1e-8)
+        else:
+            cost = delta_norm * self.config['kappa']
+
+        # --- HJB residual: V(w) - V(s) + c. Violation iff < 0. Always computed. ---
+        hjb_residual = v_w - v_s + cost
+        v_gap = v_w - v_s  # signed V difference (key for diagnosing smoothing asymmetry)
+
+        # --- Goal-type masks for stratified diagnostics ---
+        goal_type = batch['high_value_goal_type']
+        cur_mask = (goal_type == 0).astype(jnp.float32)
+        traj_mask = (goal_type == 1).astype(jnp.float32)
+        rand_mask = (goal_type == 2).astype(jnp.float32)
+
+        # --- Violation diagnostics ---
+        violation = (hjb_residual < 0.0).astype(jnp.float32)
+        violation_frac = violation.mean()
+        violation_mag = jnp.abs(jnp.minimum(0.0, hjb_residual))  # 0 where satisfied
+        violation_mag_mean = violation_mag.mean()
+
+        # --- Tightness diagnostic (independent of whether we use tight loss) ---
+        tau = self.config['tightness_threshold']
+        tight_mask = ((hjb_residual >= 0.0) & (hjb_residual < tau)).astype(jnp.float32)
+        tight_frac = tight_mask.mean()
+
+        # Diagnostics dict — populated in both branches.
+        diag = {
+            # HJB diagnostics
+            'hjb_residual_mean': hjb_residual.mean(),
+            'hjb_residual_std': hjb_residual.std(),
+            'hjb_residual_min': hjb_residual.min(),
+            'hjb_residual_max': hjb_residual.max(),
+            'violation_frac': violation_frac,
+            'violation_mag_mean': violation_mag_mean,
+            'violation_frac_cur': self._masked_mean(violation, cur_mask),
+            'violation_frac_traj': self._masked_mean(violation, traj_mask),
+            'violation_frac_rand': self._masked_mean(violation, rand_mask),
+            'tight_frac': tight_frac,
+            # V gap diagnostics — tests the sampling-asymmetry hypothesis directly
+            'v_gap_mean': v_gap.mean(),
+            'v_gap_mean_cur': self._masked_mean(v_gap, cur_mask),
+            'v_gap_mean_traj': self._masked_mean(v_gap, traj_mask),
+            'v_gap_mean_rand': self._masked_mean(v_gap, rand_mask),
+            'v_gap_abs_mean': jnp.abs(v_gap).mean(),
+            'v_gap_abs_mean_logit': jnp.abs(v_w_raw - v_s_raw).mean(),
+            # Cost diagnostics
+            'cost_mean': cost.mean(),
+            'cost_std': cost.std(),
+            'cost_max': cost.max(),
+            'delta_norm_mean': delta_norm.mean(),
+            # V at endpoints
+            'v_s_mean': v_s.mean(),
+            'v_w_mean': v_w.mean(),
+        }
+
+        # --- Loss selection: basic smoothing OR full HJB combo ---
         if self.config['basic_smoothing']:
-            loss_smooth = jnp.square(v_w - v_s).mean()
-            return loss_smooth, {
-                'geo_loss': loss_smooth,
+            # Basic smoothing operates on raw outputs (logits when value_loss_type='bce').
+            loss_smooth = jnp.square(v_w_raw - v_s_raw).mean()
+            geo_loss = loss_smooth
+            diag.update({
+                'geo_loss': geo_loss,
+                'loss_smooth': loss_smooth,
                 'loss_hjb': 0.0,
                 'loss_tight': 0.0,
                 'loss_multi': 0.0,
                 'loss_metric_reg': 0.0,
-                'hjb_residual_mean': 0.0,
-                'cost_mean': 0.0,
-            }
+                'contrib_hjb': 0.0,
+                'contrib_tight': 0.0,
+                'contrib_multi': 0.0,
+                'contrib_metric': 0.0,
+                'contrib_smooth': loss_smooth,
+            })
+            return geo_loss, diag
 
-        if self.config['value_loss_type'] == 'bce':
-            v_s = jax.nn.sigmoid(v_s)
-            v_w = jax.nn.sigmoid(v_w)
-
-        # --- Anisotropic cost c(s, w) ---
-        delta = w - obs  # (B, obs_dim)
-
-        if self.config['use_anisotropic']:
-            U, scale = self.network.select('metric')(obs, params=grad_params)
-            # M(s) = scale * I + U U^T
-            # delta^T M delta = scale * ||delta||^2 + ||U^T delta||^2
-            Ut_delta = jnp.einsum('...dr,...d->...r', U, delta)  # (B, rank)
-            sq_dist = scale * jnp.sum(delta ** 2, axis=-1) + jnp.sum(Ut_delta ** 2, axis=-1)
-            cost = jnp.sqrt(sq_dist + 1e-8)  # (B,)
-        else:
-            cost = jnp.linalg.norm(delta, axis=-1) * self.config['kappa']
-
-        # --- HJB inequality: V(w) >= V(s) - c(s,w) ---
-        #     rearranged: V(w) - V(s) + c(s,w) >= 0
-        hjb_residual = v_w - v_s + cost
+        # --- Full HJB-regularizer path ---
         loss_hjb = jnp.square(jnp.minimum(0.0, hjb_residual)).mean()
+        loss_tight = (tight_mask * jnp.square(hjb_residual)).sum() / (tight_mask.sum() + 1e-6)
 
-        # --- Tightness on near-optimal edges ---
-        tau = self.config['tightness_threshold']
-        mask = (hjb_residual < tau).astype(jnp.float32)
-        loss_tight = (mask * jnp.square(hjb_residual)).sum() / (mask.sum() + 1e-6)
-
-        # --- Multi-step consistency ---
-        next_obs = batch['high_value_next_observations']
+        # Multi-step residual (currently reuses w; contribution logged separately).
         steps = batch['high_value_subgoal_steps']
-        v_next = self.network.select('high_value')(next_obs, goals, params=grad_params)
-        if self.config['value_loss_type'] == 'bce':
-            v_next = jax.nn.sigmoid(v_next)
-
+        v_next = v_w  # same point as w — see note above
         if self.config['use_anisotropic']:
-            multi_delta = next_obs - obs
+            multi_delta = delta
             Ut_md = jnp.einsum('...dr,...d->...r', U, multi_delta)
             sq_md = scale * jnp.sum(multi_delta ** 2, axis=-1) + jnp.sum(Ut_md ** 2, axis=-1)
             multi_cost = jnp.sqrt(sq_md + 1e-8)
         else:
             multi_cost = self.config['kappa'] * steps
-
         multi_residual = v_next - v_s + multi_cost
         loss_multi = jnp.square(jnp.minimum(0.0, multi_residual)).mean()
 
-        # --- Metric regularization ---
         if self.config['use_anisotropic']:
-            # Penalize U magnitude to prevent M from exploding
             loss_metric_reg = jnp.mean(jnp.sum(U ** 2, axis=(-2, -1)))
         else:
             loss_metric_reg = 0.0
 
-        # --- Combine ---
         w_hjb = self.config['w_hjb']
         w_tight = self.config['w_tight']
         w_multi = self.config['w_multi']
         w_metric = self.config['w_metric']
 
-        geo_loss = w_hjb * loss_hjb + w_tight * loss_tight + w_multi * loss_multi + w_metric * loss_metric_reg
+        contrib_hjb = w_hjb * loss_hjb
+        contrib_tight = w_tight * loss_tight
+        contrib_multi = w_multi * loss_multi
+        contrib_metric = w_metric * loss_metric_reg
+        geo_loss = contrib_hjb + contrib_tight + contrib_multi + contrib_metric
 
-        return geo_loss, {
+        diag.update({
             'geo_loss': geo_loss,
             'loss_hjb': loss_hjb,
             'loss_tight': loss_tight,
             'loss_multi': loss_multi,
             'loss_metric_reg': loss_metric_reg,
-            'hjb_residual_mean': hjb_residual.mean(),
-            'cost_mean': cost.mean(),
-        }
+            'loss_smooth': 0.0,
+            'contrib_hjb': contrib_hjb,
+            'contrib_tight': contrib_tight,
+            'contrib_multi': contrib_multi,
+            'contrib_metric': contrib_metric,
+            'contrib_smooth': 0.0,
+            'multi_residual_mean': multi_residual.mean(),
+            'multi_cost_mean': multi_cost.mean(),
+        })
+        return geo_loss, diag
 
     @jax.jit
     def total_loss(self, batch, grad_params, rng=None):
@@ -248,7 +339,14 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         for k, v in geo_info.items():
             info[f'geodesic/{k}'] = v
 
-        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss + self.config['w_geo'] * geo_loss
+        w_geo = self.config['w_geo']
+        reg_contrib = w_geo * geo_loss
+        bce_main = high_value_loss + high_critic_loss
+        info['geodesic/reg_over_bce_ratio'] = reg_contrib / (bce_main + 1e-8)
+        info['geodesic/reg_contrib'] = reg_contrib
+
+        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss + reg_contrib
+        info['total_loss'] = loss
         return loss, info
 
     def target_update(self, network, module_name):
