@@ -38,6 +38,7 @@ python main.py \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
+  --agent.gc_negative=True \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
