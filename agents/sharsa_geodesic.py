@@ -29,6 +29,11 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
     def _masked_mean(x, mask):
         return jnp.sum(x * mask) / (jnp.sum(mask) + 1e-6)
 
+    @staticmethod
+    def binary_entropy(p, eps=1e-8):
+        p = jnp.clip(p, eps, 1.0 - eps)
+        return -(p * jnp.log(p) + (1 - p) * jnp.log(1 - p))
+
     def high_value_loss(self, batch, grad_params):
         """Compute the high-level SARSA value loss."""
         q1, q2 = self.network.select('target_high_critic')(
@@ -49,8 +54,12 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         if self.config['value_loss_type'] == 'squared':
             value_loss = ((v - q) ** 2).mean()
+            h_target = jnp.zeros(())
+            value_loss_excess = value_loss
         elif self.config['value_loss_type'] == 'bce':
             value_loss = (self.bce_loss(v_logit, q)).mean()
+            h_target = self.binary_entropy(q).mean()
+            value_loss_excess = value_loss - h_target
 
         goal_type = batch['high_value_goal_type']
         cur_mask = (goal_type == 0).astype(jnp.float32)
@@ -59,6 +68,8 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         return value_loss, {
             'value_loss': value_loss,
+            'value_loss_excess': value_loss_excess,
+            'h_target_mean': h_target,
             'v_mean': v.mean(),
             'v_std': v.std(),
             'v_max': v.max(),
@@ -90,9 +101,13 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         if self.config['value_loss_type'] == 'squared':
             critic_loss = ((q1 - q) ** 2 + (q2 - q) ** 2).mean()
+            h_target = jnp.zeros(())
+            critic_loss_excess = critic_loss
         elif self.config['value_loss_type'] == 'bce':
             q1_logit, q2_logit = q1, q2
             critic_loss = self.bce_loss(q1_logit, q).mean() + self.bce_loss(q2_logit, q).mean()
+            h_target = self.binary_entropy(q).mean()
+            critic_loss_excess = critic_loss - 2.0 * h_target
 
         goal_type = batch['high_value_goal_type']
         cur_mask = (goal_type == 0).astype(jnp.float32)
@@ -101,6 +116,8 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         return critic_loss, {
             'critic_loss': critic_loss,
+            'critic_loss_excess': critic_loss_excess,
+            'h_target_mean': h_target,
             'q_mean': q.mean(),
             'q_std': q.std(),
             'q_max': q.max(),
