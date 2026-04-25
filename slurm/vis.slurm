@@ -27,7 +27,7 @@ mkdir -p "$HR_DIR/plots"
 cd "$HR_DIR"
 
 ENV_NAME="antmaze-medium-navigate-v0"
-DATASET_DIR="$BASE/antmaze-medium-navigate-100m-v0"
+DATASET_DIR="$BASE/antmaze-medium-navigate-1b-v0"
 
 GOAL_IDX=42
 COMMON="--env_name=$ENV_NAME --dataset_dir=$DATASET_DIR --grid_size=100 --goal_idx=$GOAL_IDX --save_dir=plots/"
@@ -38,7 +38,7 @@ python vis.py \
   --agent=agents/sharsa.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
-  --restore_path="exp/horizon-reduction/baseline_sharsa_ant_100m/*" \
+  --restore_path="exp/horizon-reduction/baseline_sharsa_ant_1b/*" \
   $COMMON
 
 # Basic Smoothing
@@ -49,7 +49,7 @@ python vis.py \
   --agent.subgoal_steps=25 \
   --agent.basic_smoothing=True \
   --agent.w_geo=0.5 \
-  --restore_path="exp/horizon-reduction/basic_smoothing_ant_100m/sd000_*" \
+  --restore_path="exp/horizon-reduction/basic_smoothing_ant_1b/sd000_*" \
   --title=basic_smoothing \
   $COMMON
 
@@ -61,7 +61,7 @@ python vis.py \
   --agent.subgoal_steps=25 \
   --agent.use_anisotropic=False \
   --agent.w_geo=1.0 \
-  --restore_path="exp/horizon-reduction/geo_aniso_ant_100m_dev/sd000_*" \
+  --restore_path="exp/horizon-reduction/geo_aniso_ant_1b_dev/sd000_*" \
   --title=sharsa_geodesic \
   $COMMON
 
