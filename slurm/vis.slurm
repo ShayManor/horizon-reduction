@@ -67,3 +67,15 @@ python vis.py \
 
 echo "=== All visualizations complete ==="
 ls -la plots/*.png
+
+# Commit and push generated plots.
+echo "=== Committing plots to git ==="
+cd "$HR_DIR"
+git add plots/*.png
+if git diff --cached --quiet; then
+  echo "No plot changes to commit."
+else
+  git -c user.name="shaymanor" -c user.email="shay.manor@gmail.com" commit -m "vis: update value contour plots ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+  git pull --rebase --autostash origin "$(git rev-parse --abbrev-ref HEAD)" || true
+  git push origin "$(git rev-parse --abbrev-ref HEAD)"
+fi
