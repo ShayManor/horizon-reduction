@@ -83,6 +83,71 @@ class SHARSAAgent(flax.struct.PyTreeNode):
             'q_min': q.min(),
         }
 
+    def physics_loss(self, batch, grad_params, rng):
+        """Physics-informed value regularization (HJB / Feynman-Kac, paper Eq. 7).
+
+        L_phy = E_s [ max(0, V(s,g; theta) - E_eps[V(s + nu*eps, g; theta_bar)] - q(s,g)*dt/nu)^2 ]
+
+        - target_high_value supplies V(s'; theta_bar); gradient is naturally cut.
+        - eps ~ N(0, I), no kinematic-boundary clipping (no d_dX in offline GCRL).
+        - q(s, g) selectable via phy_q_mode in {'constant', 'reward', 'distance'}.
+        """
+        obs = batch['observations']
+        goals = batch['high_value_goals']
+        B, D = obs.shape
+        n = self.config['phy_n_samples']
+        nu = self.config['phy_nu']
+        dt = self.config['phy_dt']
+
+        v_s_raw = self.network.select('high_value')(obs, goals, params=grad_params)
+        if self.config['value_loss_type'] == 'bce':
+            v_s = jax.nn.sigmoid(v_s_raw)
+        else:
+            v_s = v_s_raw
+
+        eps = jax.random.normal(rng, (n, B, D))
+        s_prime = obs[None, ...] + nu * eps
+        goals_b = jnp.broadcast_to(goals[None, ...], (n,) + goals.shape)
+        s_prime_flat = s_prime.reshape(n * B, D)
+        goals_flat = goals_b.reshape(n * B, goals.shape[-1])
+
+        v_sp_raw = self.network.select('target_high_value')(s_prime_flat, goals_flat)
+        if self.config['value_loss_type'] == 'bce':
+            v_sp = jax.nn.sigmoid(v_sp_raw)
+        else:
+            v_sp = v_sp_raw
+        v_sp = v_sp.reshape(n, B)
+        v_sp_mean = v_sp.mean(axis=0)
+
+        q_mode = self.config['phy_q_mode']
+        if q_mode == 'constant':
+            q = jnp.full((B,), float(self.config['phy_kappa']))
+        elif q_mode == 'reward':
+            q = jnp.clip(1.0 - batch['high_value_rewards'], 0.0, None)
+        elif q_mode == 'distance':
+            reps = batch.get('high_value_reps', obs)
+            q = jnp.linalg.norm(reps - goals, axis=-1)
+        else:
+            raise ValueError(f"unknown phy_q_mode: {q_mode}")
+
+        slack = q * dt / nu
+        residual = v_s - v_sp_mean - slack
+        violation = jnp.maximum(0.0, residual)
+        loss = jnp.mean(violation ** 2)
+
+        info = {
+            'phy_loss': loss,
+            'phy_residual_mean': residual.mean(),
+            'phy_residual_max': residual.max(),
+            'phy_violation_frac': (residual > 0.0).astype(jnp.float32).mean(),
+            'phy_violation_mag_mean': violation.mean(),
+            'phy_v_s_mean': v_s.mean(),
+            'phy_v_sp_mean': v_sp.mean(),
+            'phy_slack_mean': slack.mean(),
+            'phy_q_mean': q.mean(),
+        }
+        return loss, info
+
     def high_actor_loss(self, batch, grad_params, rng=None):
         """Compute the high-level flow BC actor loss."""
         batch_size, action_dim = batch['high_actor_actions'].shape
@@ -135,7 +200,7 @@ class SHARSAAgent(flax.struct.PyTreeNode):
         info = {}
         rng = rng if rng is not None else self.rng
 
-        rng, high_value_rng, high_critic_rng, high_actor_rng, low_actor_rng = jax.random.split(rng, 5)
+        rng, high_value_rng, high_critic_rng, high_actor_rng, low_actor_rng, phy_rng = jax.random.split(rng, 6)
 
         high_value_loss, high_value_info = self.high_value_loss(batch, grad_params)
         for k, v in high_value_info.items():
@@ -153,7 +218,13 @@ class SHARSAAgent(flax.struct.PyTreeNode):
         for k, v in low_actor_info.items():
             info[f'low_actor/{k}'] = v
 
-        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss
+        phy_loss, phy_info = self.physics_loss(batch, grad_params, phy_rng)
+        for k, v in phy_info.items():
+            info[f'physics/{k}'] = v
+        phy_contrib = self.config['phy_w'] * phy_loss
+        info['physics/phy_contrib'] = phy_contrib
+
+        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss + phy_contrib
         return loss, info
 
     def target_update(self, network, module_name):
@@ -175,6 +246,7 @@ class SHARSAAgent(flax.struct.PyTreeNode):
 
         new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
         self.target_update(new_network, 'high_critic')
+        self.target_update(new_network, 'high_value')
 
         return self.replace(network=new_network, rng=new_rng), info
 
@@ -270,6 +342,7 @@ class SHARSAAgent(flax.struct.PyTreeNode):
 
         network_info = dict(
             high_value=(high_value_def, (ex_observations, ex_goals)),
+            target_high_value=(copy.deepcopy(high_value_def), (ex_observations, ex_goals)),
             high_critic=(high_critic_def, (ex_observations, ex_goals, ex_goals)),
             target_high_critic=(copy.deepcopy(high_critic_def), (ex_observations, ex_goals, ex_goals)),
             high_actor_flow=(high_actor_flow_def, (ex_observations, ex_goals, ex_goals, ex_times)),
@@ -285,6 +358,7 @@ class SHARSAAgent(flax.struct.PyTreeNode):
 
         params = network.params
         params['modules_target_high_critic'] = params['modules_high_critic']
+        params['modules_target_high_value'] = params['modules_high_value']
 
         config['action_dim'] = action_dim
         config['goal_dim'] = goal_dim
@@ -321,6 +395,14 @@ def get_config():
             actor_p_randomgoal=0.5,  # Probability of using a random state as the actor goal.
             actor_geom_sample=True,  # Whether to use geometric sampling for future actor goals.
             gc_negative=False,  # Whether to use '0 if s == g else -1' (True) or '1 if s == g else 0' (False) as reward.
+
+            # Physics-informed value regularization (paper Eq. 7). phy_w=0 leaves it inert.
+            phy_w=0.0,
+            phy_q_mode='constant',  # 'constant' | 'reward' | 'distance'
+            phy_kappa=0.01,
+            phy_nu=0.1,
+            phy_dt=1.0,
+            phy_n_samples=1,
         )
     )
     return config

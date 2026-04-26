@@ -178,13 +178,81 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         return actor_loss, actor_info
 
+    def physics_loss(self, batch, grad_params, rng):
+        """Physics-informed value regularization (HJB / Feynman-Kac, paper Eq. 7).
+
+        L_phy = E_s [ max(0, V(s,g; theta) - E_eps[V(s + nu*eps, g; theta_bar)] - q(s,g)*dt/nu)^2 ]
+
+        - target_high_value supplies V(s'; theta_bar); gradient is naturally cut.
+        - eps ~ N(0, I), no kinematic-boundary clipping (no d_dX in offline GCRL).
+        - q(s, g) selectable via phy_q_mode in {'constant', 'reward', 'distance'}.
+        """
+        obs = batch['observations']
+        goals = batch['high_value_goals']
+        B, D = obs.shape
+        n = self.config['phy_n_samples']
+        nu = self.config['phy_nu']
+        dt = self.config['phy_dt']
+
+        v_s_raw = self.network.select('high_value')(obs, goals, params=grad_params)
+        if self.config['value_loss_type'] == 'bce':
+            v_s = jax.nn.sigmoid(v_s_raw)
+        else:
+            v_s = v_s_raw
+
+        eps = jax.random.normal(rng, (n, B, D))
+        s_prime = obs[None, ...] + nu * eps  # (n, B, D)
+        goals_b = jnp.broadcast_to(goals[None, ...], (n,) + goals.shape)
+        s_prime_flat = s_prime.reshape(n * B, D)
+        goals_flat = goals_b.reshape(n * B, goals.shape[-1])
+
+        v_sp_raw = self.network.select('target_high_value')(s_prime_flat, goals_flat)
+        if self.config['value_loss_type'] == 'bce':
+            v_sp = jax.nn.sigmoid(v_sp_raw)
+        else:
+            v_sp = v_sp_raw
+        v_sp = v_sp.reshape(n, B)
+        v_sp_mean = v_sp.mean(axis=0)  # (B,)
+
+        q_mode = self.config['phy_q_mode']
+        if q_mode == 'constant':
+            q = jnp.full((B,), float(self.config['phy_kappa']))
+        elif q_mode == 'reward':
+            # Default convention (gc_negative=False): r in [0,1], 1 at goal => cost in [0,1].
+            # Negative-reward convention: clip the post-transform to keep slack >= 0.
+            q = jnp.clip(1.0 - batch['high_value_rewards'], 0.0, None)
+        elif q_mode == 'distance':
+            # high_value_reps and high_value_goals are guaranteed same-space (see datasets.py).
+            reps = batch.get('high_value_reps', obs)
+            q = jnp.linalg.norm(reps - goals, axis=-1)
+        else:
+            raise ValueError(f"unknown phy_q_mode: {q_mode}")
+
+        slack = q * dt / nu
+        residual = v_s - v_sp_mean - slack
+        violation = jnp.maximum(0.0, residual)
+        loss = jnp.mean(violation ** 2)
+
+        info = {
+            'phy_loss': loss,
+            'phy_residual_mean': residual.mean(),
+            'phy_residual_max': residual.max(),
+            'phy_violation_frac': (residual > 0.0).astype(jnp.float32).mean(),
+            'phy_violation_mag_mean': violation.mean(),
+            'phy_v_s_mean': v_s.mean(),
+            'phy_v_sp_mean': v_sp.mean(),
+            'phy_slack_mean': slack.mean(),
+            'phy_q_mean': q.mean(),
+        }
+        return loss, info
+
     def geodesic_hjb_loss(self, batch, grad_params):
         """Geodesic HJB / basic-smoothing regularization with unified diagnostics."""
         obs = batch['observations']  # (B, D)
         goals = batch['high_value_goals']  # (B, G)
         w = batch['high_value_next_observations']  # (B, obs_dim)
 
-        # --- Value at s and w (logits if bce) ---
+        #  Value at s and w (logits if bce) 
         v_s_raw = self.network.select('high_value')(obs, goals, params=grad_params)
         v_w_raw = self.network.select('high_value')(w, goals, params=grad_params)
 
@@ -195,7 +263,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
             v_s = v_s_raw
             v_w = v_w_raw
 
-        # --- Cost c(s, w) (always computed for diagnostics) ---
+        #  Cost c(s, w) (always computed for diagnostics) 
         delta = w - obs  # (B, obs_dim)
         delta_norm = jnp.linalg.norm(delta, axis=-1)
 
@@ -207,28 +275,26 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         else:
             cost = delta_norm * self.config['kappa']
 
-        # --- HJB residual: V(w) - V(s) + c. Violation iff < 0. Always computed. ---
+        #  HJB residual: V(w) - V(s) + c. Violation iff < 0. Always computed. 
         hjb_residual = v_w - v_s + cost
         v_gap = v_w - v_s  # signed V difference (key for diagnosing smoothing asymmetry)
 
-        # --- Goal-type masks for stratified diagnostics ---
+        #  Goal-type masks for stratified diagnostics 
         goal_type = batch['high_value_goal_type']
         cur_mask = (goal_type == 0).astype(jnp.float32)
         traj_mask = (goal_type == 1).astype(jnp.float32)
         rand_mask = (goal_type == 2).astype(jnp.float32)
 
-        # --- Violation diagnostics ---
+        #  Violation diagnostics 
         violation = (hjb_residual < 0.0).astype(jnp.float32)
         violation_frac = violation.mean()
         violation_mag = jnp.abs(jnp.minimum(0.0, hjb_residual))  # 0 where satisfied
         violation_mag_mean = violation_mag.mean()
 
-        # --- Tightness diagnostic (independent of whether we use tight loss) ---
         tau = self.config['tightness_threshold']
         tight_mask = ((hjb_residual >= 0.0) & (hjb_residual < tau)).astype(jnp.float32)
         tight_frac = tight_mask.mean()
 
-        # Diagnostics dict — populated in both branches.
         diag = {
             # HJB diagnostics
             'hjb_residual_mean': hjb_residual.mean(),
@@ -258,7 +324,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
             'v_w_mean': v_w.mean(),
         }
 
-        # --- Loss selection: basic smoothing OR full HJB combo ---
+        #  Loss selection: basic smoothing OR full HJB combo 
         if self.config['basic_smoothing']:
             # Basic smoothing operates on raw outputs (logits when value_loss_type='bce').
             loss_smooth = jnp.square(v_w_raw - v_s_raw).mean()
@@ -278,7 +344,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
             })
             return geo_loss, diag
 
-        # --- Full HJB-regularizer path ---
+        #  Full HJB-regularizer path 
         loss_hjb = jnp.square(jnp.minimum(0.0, hjb_residual)).mean()
         loss_tight = (tight_mask * jnp.square(hjb_residual)).sum() / (tight_mask.sum() + 1e-6)
 
@@ -333,7 +399,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         """Compute the total loss = SHARSA losses + geodesic HJB."""
         info = {}
         rng = rng if rng is not None else self.rng
-        rng, high_value_rng, high_critic_rng, high_actor_rng, low_actor_rng = jax.random.split(rng, 5)
+        rng, high_value_rng, high_critic_rng, high_actor_rng, low_actor_rng, phy_rng = jax.random.split(rng, 6)
 
         high_value_loss, high_value_info = self.high_value_loss(batch, grad_params)
         for k, v in high_value_info.items():
@@ -362,7 +428,13 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         info['geodesic/reg_over_bce_ratio'] = reg_contrib / (bce_main + 1e-8)
         info['geodesic/reg_contrib'] = reg_contrib
 
-        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss + reg_contrib
+        phy_loss, phy_info = self.physics_loss(batch, grad_params, phy_rng)
+        for k, v in phy_info.items():
+            info[f'physics/{k}'] = v
+        phy_contrib = self.config['phy_w'] * phy_loss
+        info['physics/phy_contrib'] = phy_contrib
+
+        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss + reg_contrib + phy_contrib
         info['total_loss'] = loss
         return loss, info
 
@@ -385,6 +457,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
         self.target_update(new_network, 'high_critic')
+        self.target_update(new_network, 'high_value')
 
         return self.replace(network=new_network, rng=new_rng), info
 
@@ -464,6 +537,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         network_info = dict(
             high_value=(high_value_def, (ex_observations, ex_goals)),
+            target_high_value=(copy.deepcopy(high_value_def), (ex_observations, ex_goals)),
             high_critic=(high_critic_def, (ex_observations, ex_goals, ex_goals)),
             target_high_critic=(copy.deepcopy(high_critic_def), (ex_observations, ex_goals, ex_goals)),
             high_actor_flow=(high_actor_flow_def, (ex_observations, ex_goals, ex_goals, ex_times)),
@@ -480,6 +554,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
 
         params = network.params
         params['modules_target_high_critic'] = params['modules_high_critic']
+        params['modules_target_high_value'] = params['modules_high_value']
 
         config['action_dim'] = action_dim
         config['goal_dim'] = goal_dim
@@ -527,6 +602,14 @@ def get_config():
             w_tight=0.5,
             w_multi=0.5,
             w_metric=0.01,
+
+            # Physics-informed value regularization (paper Eq. 7). phy_w=0 leaves it inert.
+            phy_w=0.0,
+            phy_q_mode='constant',  # 'constant' | 'reward' | 'distance'
+            phy_kappa=0.01,
+            phy_nu=0.1,
+            phy_dt=1.0,
+            phy_n_samples=1,
         )
     )
     return config
