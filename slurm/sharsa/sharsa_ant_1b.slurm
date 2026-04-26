@@ -38,6 +38,12 @@ python main.py \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
+  --agent.phy_w=1.0 \
+  --agent.phy_q_mode=constant \
+  --agent.phy_kappa=0.01 \
+  --agent.phy_nu=0.1 \
+  --agent.phy_dt=1.0 \
+  --agent.phy_n_samples=1 \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \

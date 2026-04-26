@@ -42,6 +42,12 @@ python main.py \
   --agent.w_geo=1.0 \
   --agent.tightness_threshold=0.2 \
   --agent.metric_rank=8 \
+  --agent.phy_w=1.0 \
+  --agent.phy_q_mode=constant \
+  --agent.phy_kappa=0.01 \
+  --agent.phy_nu=0.1 \
+  --agent.phy_dt=1.0 \
+  --agent.phy_n_samples=1 \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
