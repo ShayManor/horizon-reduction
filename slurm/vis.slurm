@@ -32,38 +32,46 @@ DATASET_DIR="$BASE/antmaze-medium-navigate-1b-v0"
 GOAL_IDX=42
 COMMON="--env_name=$ENV_NAME --dataset_dir=$DATASET_DIR --grid_size=100 --goal_idx=$GOAL_IDX --save_dir=plots/"
 
+run_vis() {
+  local label="$1"; shift
+  local pattern="$1"; shift
+  shopt -s nullglob
+  local matches=( $pattern )
+  shopt -u nullglob
+  if [ ${#matches[@]} -eq 0 ]; then
+    echo "=== Skipping: $label (no checkpoint at $pattern) ==="
+    return 0
+  fi
+  echo "=== Visualizing: $label ==="
+  python vis.py "$@" --restore_path="$pattern" $COMMON
+}
+
 # Baseline SHARSA
-echo "=== Visualizing: Baseline SHARSA ==="
-python vis.py \
+run_vis "Baseline SHARSA" \
+  "exp/horizon-reduction/baseline_sharsa_ant_1b/*" \
   --agent=agents/sharsa.py \
   --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --restore_path="exp/horizon-reduction/baseline_sharsa_ant_1b/*" \
-  $COMMON
+  --agent.subgoal_steps=25
 
-# Basic Smoothing
-echo "=== Visualizing: Basic Smoothing ==="
-python vis.py \
+# Basic Smoothing (1b — skipped if not trained yet)
+run_vis "Basic Smoothing" \
+  "exp/horizon-reduction/basic_smoothing_ant_1b/sd000_*" \
   --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
   --agent.basic_smoothing=True \
   --agent.w_geo=0.5 \
-  --restore_path="exp/horizon-reduction/basic_smoothing_ant_1b/sd000_*" \
-  --title=basic_smoothing \
-  $COMMON
+  --title=basic_smoothing
 
 # Geodesic (isotropic)
-echo "=== Visualizing: Geodesic Isotropic ==="
-python vis.py \
+run_vis "Geodesic Isotropic" \
+  "exp/horizon-reduction/geo_aniso_ant_1b_dev/sd000_*" \
   --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
   --agent.use_anisotropic=False \
   --agent.w_geo=1.0 \
-  --restore_path="exp/horizon-reduction/geo_aniso_ant_1b_dev/sd000_*" \
-  --title=sharsa_geodesic \
-  $COMMON
+  --title=sharsa_geodesic
 
 echo "=== All visualizations complete ==="
 ls -la plots/*.png
