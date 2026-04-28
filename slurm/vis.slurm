@@ -36,10 +36,19 @@ DATASET_DIR="$BASE/antmaze-medium-navigate-1b-v0"
 GOAL_IDX=42
 COMMON="--env_name=$ENV_NAME --dataset_dir=$DATASET_DIR --grid_size=100 --goal_idx=$GOAL_IDX --save_dir=$OUT_DIR/"
 
-# Resolve the most recent training run directory under a run_group (by mtime).
+# Resolve the most recent training run directory under a run_group (by mtime),
+# considering only runs that have at least one params_*.pkl checkpoint saved.
 latest_run() {
   local group="$1"
-  ls -1dt "exp/horizon-reduction/$group"/sd*/ 2>/dev/null | head -n 1 || true
+  local d
+  while IFS= read -r d; do
+    [ -z "$d" ] && continue
+    if compgen -G "${d}params_*.pkl" > /dev/null; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+  done < <(ls -1dt "exp/horizon-reduction/$group"/sd*/ 2>/dev/null || true)
+  return 0
 }
 
 FAILED_LABELS=()
@@ -113,9 +122,17 @@ else
   if git diff --cached --quiet; then
     echo "No plot changes to commit."
   else
+    BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+    # Force SSH for any github.com remote operation in this script (compute nodes
+    # have no askpass tty for HTTPS prompts). Local git config is untouched.
+    GIT_SSH="git -c url.git@github.com:.insteadOf=https://github.com/ -c url.git@github.com:.insteadOf=https://github.com"
     git -c user.name="shaymanor" -c user.email="shay.manor@gmail.com" commit -m "vis: value contour plots $STAMP" || true
-    git pull --rebase --autostash origin "$(git rev-parse --abbrev-ref HEAD)" || true
-    git push origin "$(git rev-parse --abbrev-ref HEAD)" || echo "git push failed"
+    $GIT_SSH pull --rebase --autostash origin "$BRANCH" || true
+    if $GIT_SSH push origin "$BRANCH"; then
+      echo "git push OK"
+    else
+      echo "git push failed"
+    fi
   fi
 fi
 
