@@ -123,12 +123,14 @@ else
     echo "No plot changes to commit."
   else
     BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-    # Force SSH for any github.com remote operation in this script (compute nodes
-    # have no askpass tty for HTTPS prompts). Local git config is untouched.
-    GIT_SSH="git -c url.git@github.com:.insteadOf=https://github.com/ -c url.git@github.com:.insteadOf=https://github.com"
+    # Compute nodes have no askpass tty; bypass HTTPS entirely by talking to the
+    # SSH URL directly. Avoids any reliance on origin's URL or insteadOf rewrites.
+    SSH_URL="git@github.com:ShayManor/horizon-reduction.git"
+    export GIT_TERMINAL_PROMPT=0
+    export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
     git -c user.name="shaymanor" -c user.email="shay.manor@gmail.com" commit -m "vis: value contour plots $STAMP" || true
-    $GIT_SSH pull --rebase --autostash origin "$BRANCH" || true
-    if $GIT_SSH push origin "$BRANCH"; then
+    git pull --rebase --autostash "$SSH_URL" "$BRANCH" || echo "git pull/rebase failed (continuing to push attempt)"
+    if git push "$SSH_URL" "HEAD:$BRANCH"; then
       echo "git push OK"
     else
       echo "git push failed"
