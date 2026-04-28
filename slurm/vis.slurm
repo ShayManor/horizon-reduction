@@ -42,6 +42,9 @@ latest_run() {
   ls -1dt "exp/horizon-reduction/$group"/sd*/ 2>/dev/null | head -n 1 || true
 }
 
+FAILED_LABELS=()
+SUCCEEDED_LABELS=()
+
 run_vis() {
   local label="$1"; shift
   local group="$1"; shift
@@ -49,11 +52,19 @@ run_vis() {
   path=$(latest_run "$group")
   if [ -z "$path" ]; then
     echo "=== Skipping: $label (no run found under exp/horizon-reduction/$group) ==="
+    FAILED_LABELS+=("$label (no run dir)")
     return 0
   fi
   path="${path%/}"
   echo "=== Visualizing: $label  ($path) ==="
-  python vis.py "$@" --restore_path="$path" $COMMON
+  if python vis.py "$@" --restore_path="$path" $COMMON; then
+    SUCCEEDED_LABELS+=("$label")
+  else
+    local rc=$?
+    echo "=== FAILED: $label (vis.py exit $rc) — continuing ==="
+    FAILED_LABELS+=("$label (vis.py exit $rc)")
+  fi
+  return 0
 }
 
 # Baseline SHARSA
@@ -84,17 +95,32 @@ run_vis "Geodesic Isotropic" \
   --agent.w_geo=1.0 \
   --title=sharsa_geodesic
 
-echo "=== All visualizations complete ==="
+echo "=== Visualization summary ==="
+echo "Succeeded: ${SUCCEEDED_LABELS[*]:-(none)}"
+echo "Failed:    ${FAILED_LABELS[*]:-(none)}"
 ls -la "$OUT_DIR"/*.png 2>/dev/null || echo "(no plots produced)"
 
-# Commit and push generated plots.
+# Commit and push whatever plots did get produced. Always run, even if some methods failed.
 echo "=== Committing plots to git ==="
 cd "$HR_DIR"
-git add "plots/$STAMP"/*.png 2>/dev/null || true
-if git diff --cached --quiet; then
-  echo "No plot changes to commit."
+shopt -s nullglob
+PLOTS=( "plots/$STAMP"/*.png )
+shopt -u nullglob
+if [ ${#PLOTS[@]} -eq 0 ]; then
+  echo "No plots produced; nothing to commit."
 else
-  git -c user.name="shaymanor" -c user.email="shay.manor@gmail.com" commit -m "vis: value contour plots $STAMP"
-  git pull --rebase --autostash origin "$(git rev-parse --abbrev-ref HEAD)" || true
-  git push origin "$(git rev-parse --abbrev-ref HEAD)"
+  git add "${PLOTS[@]}" || true
+  if git diff --cached --quiet; then
+    echo "No plot changes to commit."
+  else
+    git -c user.name="shaymanor" -c user.email="shay.manor@gmail.com" commit -m "vis: value contour plots $STAMP" || true
+    git pull --rebase --autostash origin "$(git rev-parse --abbrev-ref HEAD)" || true
+    git push origin "$(git rev-parse --abbrev-ref HEAD)" || echo "git push failed"
+  fi
+fi
+
+# Exit non-zero if any method failed, but only AFTER the push has run.
+if [ ${#FAILED_LABELS[@]} -gt 0 ]; then
+  echo "=== Some methods failed: ${FAILED_LABELS[*]} ==="
+  exit 1
 fi
