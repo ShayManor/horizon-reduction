@@ -38,10 +38,13 @@ python main.py \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
+  --agent.use_anisotropic=False \
+  --agent.w_geo=1.0 \
+  --agent.tightness_threshold=0.2 \
+  --agent.metric_rank=8 \
   --agent.use_fk_loss=True \
   --agent.viscous_scale=0.01 \
   --agent.num_walks=10 \
-  --agent.w_geo=1.0 \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \

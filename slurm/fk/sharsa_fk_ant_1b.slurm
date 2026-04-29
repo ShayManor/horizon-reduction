@@ -38,6 +38,12 @@ python main.py \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
+  --agent.phy_w=1.0 \
+  --agent.phy_q_mode=constant \
+  --agent.phy_kappa=0.01 \
+  --agent.phy_nu=0.1 \
+  --agent.phy_dt=1.0 \
+  --agent.phy_n_samples=1 \
   --agent.w_fk=1.0 \
   --agent.viscous_scale=0.01 \
   --agent.num_walks=10 \
