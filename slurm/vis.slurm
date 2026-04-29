@@ -104,6 +104,18 @@ run_vis "Geodesic Isotropic" \
   --agent.w_geo=1.0 \
   --title=sharsa_geodesic
 
+# FK (stochastic Feynman-Kac viscous regularizer)
+run_vis "FK" \
+  "fk_ant_1b" \
+  --agent=agents/sharsa_geodesic.py \
+  --agent.q_agg=min \
+  --agent.subgoal_steps=25 \
+  --agent.use_fk_loss=True \
+  --agent.viscous_scale=0.01 \
+  --agent.num_walks=10 \
+  --agent.w_geo=1.0 \
+  --title=fk
+
 echo "=== Visualization summary ==="
 echo "Succeeded: ${SUCCEEDED_LABELS[*]:-(none)}"
 echo "Failed:    ${FAILED_LABELS[*]:-(none)}"
