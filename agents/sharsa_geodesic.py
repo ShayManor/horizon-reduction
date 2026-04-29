@@ -10,38 +10,7 @@ import optax
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.networks import ActorVectorField, GCValue, GCMetric
 from agents.fk_loss import stochastic_fk_loss
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Adapters for the verbatim FK loss.
-# `stochastic_fk_loss` (in agents/fk_loss.py — frozen) calls
-#   self.network.select('value')(obs, goal_reps, params=grad_params)
-#   self.network.select('rep_value')(batch['value_goals'])
-# and reads batch['speed'] / batch['value_goals']. Our agent uses
-# `high_value` and `high_value_goals`, has no separate goal encoder, and the
-# dataset doesn't carry per-state speed. The proxies below remap names without
-# mutating the function.
-# ──────────────────────────────────────────────────────────────────────────────
-class _FKNetProxy:
-    def __init__(self, real_network):
-        self._real = real_network
-
-    def select(self, name):
-        if name == 'value':
-            return self._real.select('high_value')
-        if name == 'rep_value':
-            # Goals are already in value-space; rep_value is identity.
-            def _identity(x, **_kw):
-                return x
-            return _identity
-        return self._real.select(name)
-
-
-class _FKAgentProxy:
-    """Minimal stand-in for `self` inside stochastic_fk_loss."""
-    def __init__(self, agent):
-        self.network = _FKNetProxy(agent.network)
-        self.config = agent.config
+from agents._fk_wiring import FKAgentProxy, make_fk_batch
 
 
 class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
@@ -453,15 +422,7 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         # Regularizer: either the verbatim FK loss (agents/fk_loss.py) or the
         # legacy geodesic-HJB combo. Selected by config['use_fk_loss'].
         if self.config['use_fk_loss']:
-            fk_batch = {
-                'observations': batch['observations'],
-                'value_goals': batch['high_value_goals'],
-                'speed': batch.get(
-                    'speed',
-                    jnp.ones((batch['observations'].shape[0],), dtype=batch['observations'].dtype),
-                ),
-            }
-            geo_loss, fk_info = stochastic_fk_loss(_FKAgentProxy(self), fk_batch, grad_params, fk_rng)
+            geo_loss, fk_info = stochastic_fk_loss(FKAgentProxy(self), make_fk_batch(batch), grad_params, fk_rng)
             for k, v in fk_info.items():
                 info[f'fk/{k}'] = v
         else:

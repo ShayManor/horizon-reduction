@@ -9,6 +9,8 @@ import optax
 
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
 from utils.networks import ActorVectorField, GCValue
+from agents.fk_loss import stochastic_fk_loss
+from agents._fk_wiring import FKAgentProxy, make_fk_batch
 
 
 class SHARSAAgent(flax.struct.PyTreeNode):
@@ -200,7 +202,7 @@ class SHARSAAgent(flax.struct.PyTreeNode):
         info = {}
         rng = rng if rng is not None else self.rng
 
-        rng, high_value_rng, high_critic_rng, high_actor_rng, low_actor_rng, phy_rng = jax.random.split(rng, 6)
+        rng, high_value_rng, high_critic_rng, high_actor_rng, low_actor_rng, phy_rng, fk_rng = jax.random.split(rng, 7)
 
         high_value_loss, high_value_info = self.high_value_loss(batch, grad_params)
         for k, v in high_value_info.items():
@@ -224,7 +226,20 @@ class SHARSAAgent(flax.struct.PyTreeNode):
         phy_contrib = self.config['phy_w'] * phy_loss
         info['physics/phy_contrib'] = phy_contrib
 
-        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss + phy_contrib
+        # Stochastic Feynman-Kac viscous regularizer (agents/fk_loss.py — frozen).
+        # Skipped at trace time when w_fk = 0 to keep the pure baseline cheap.
+        if self.config['w_fk'] > 0:
+            fk_loss_val, fk_info = stochastic_fk_loss(
+                FKAgentProxy(self), make_fk_batch(batch), grad_params, fk_rng
+            )
+            for k, v in fk_info.items():
+                info[f'fk/{k}'] = v
+            fk_contrib = self.config['w_fk'] * fk_loss_val
+            info['fk/fk_contrib'] = fk_contrib
+        else:
+            fk_contrib = 0.0
+
+        loss = high_value_loss + high_critic_loss + high_actor_loss + low_actor_loss + phy_contrib + fk_contrib
         return loss, info
 
     def target_update(self, network, module_name):
@@ -403,6 +418,14 @@ def get_config():
             phy_nu=0.1,
             phy_dt=1.0,
             phy_n_samples=1,
+
+            # Stochastic Feynman-Kac viscous regularization (agents/fk_loss.py).
+            # w_fk=0 leaves it inert (matches upstream baseline behavior).
+            w_fk=0.0,
+            viscous_scale=0.01,
+            num_walks=10,
+            enable_viscous_metric=True,
+            use_metric_only=False,
         )
     )
     return config
