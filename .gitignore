@@ -6,3 +6,6 @@ dist/
 .DS_Store
 .idea/
 .ruff_cache/
+CLAUDE.md
+exp/
+docs/
