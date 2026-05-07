@@ -11,21 +11,12 @@
 #SBATCH -e /scratch/gautschi/manors/logs/dgvisc_ant_med_%j.err
 set -euo pipefail
 
-# Paper's stack: agents/gcivl/state/dual.py — GCIVL + Dual goal rep + FK regularizer.
 # Goal of this job: reproduce the paper's antmaze-medium contour on Gautschi.
-# We do NOT graft anything here onto our SHARSA agent; that experiment lives in
-# slurm/fk/ and is known to not reproduce the paper for reasons documented in
-
-# Try the existing ogbench-py311 venv. If imports fail at runtime (e.g. distrax,
-# matplotlib==3.7.5 mismatches per dual-goal-viscosity/README.md), create a
-# dedicated dgvisc venv per the paper's README and point this script at it.
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
 export HR_DIR=$HOME/horizon-reduction
 export DGVISC_DIR="$HR_DIR/dual-goal-viscosity"
 
-# Read by the patched dual-goal-viscosity/main.py (line ~76, env-var fallthrough).
-# ogbench will download antmaze-medium-navigate-v0 here on first use.
 export DGVISC_DATA_DIR=/scratch/gautschi/manors/ogbench_dgvisc/
 
 export PYTHONPATH="$DGVISC_DIR:${PYTHONPATH:-}"

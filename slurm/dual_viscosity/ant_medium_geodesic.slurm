@@ -11,26 +11,14 @@
 #SBATCH -e /scratch/gautschi/manors/logs/dgvisc_ant_med_geo_%j.err
 set -euo pipefail
 
-# Paper's gcivl_dual stack + our geodesic-HJB regularizer added on top.
+# gcivl_dual stack + our geodesic-HJB regularizer added on top.
 # Agent: agents/gcivl/state/dual_geodesic.py
-#   = paper's rep_loss + value_loss(with FK) + actor_loss + (NEW) geodesic_hjb_loss
-# Tests the question: does the geodesic regularizer help on top of a value
-# backbone that already produces good contours?
-#
-# Companion to slurm/dual_viscosity/ant_medium.slurm (same setup, no HJB).
-# To disable the HJB and recover the paper's behaviour exactly, pass
-# --agent.enable_geodesic_hjb=False.
-
-# Try the existing ogbench-py311 venv. If imports fail at runtime (e.g. distrax,
-# matplotlib==3.7.5 mismatches per dual-goal-viscosity/README.md), create a
-# dedicated dgvisc venv per the paper's README and point this script at it.
+#   = paper's rep_loss + value_loss(with FK) + actor_loss + geodesic_hjb_loss
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
 export HR_DIR=$HOME/horizon-reduction
 export DGVISC_DIR="$HR_DIR/dual-goal-viscosity"
 
-# Read by the patched dual-goal-viscosity/main.py (line ~76, env-var fallthrough).
-# ogbench will download antmaze-medium-navigate-v0 here on first use.
 export DGVISC_DATA_DIR=/scratch/gautschi/manors/ogbench_dgvisc/
 
 export PYTHONPATH="$DGVISC_DIR:${PYTHONPATH:-}"
@@ -67,7 +55,6 @@ fi
 
 RUN_GROUP="dgvisc_ant_med_geo_$(date +%Y%m%d_%H%M%S)_$SLURM_JOB_ID"
 
-# Train: paper's recipe + our HJB term (enabled by default in the agent's config).
 python main.py \
   --run_group="$RUN_GROUP" \
   --seed=0 \

@@ -16,6 +16,19 @@ set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
+# Self-heal: matplotlib in this venv was built against NumPy 1.x but the venv
+# now ships NumPy 2.x. vis.py imports matplotlib.pyplot first thing and crashes
+# with `AttributeError: _ARRAY_API not found`. Probe and upgrade if needed.
+if ! python -c "import matplotlib.pyplot" 2>/dev/null; then
+  echo "=== matplotlib import broken (likely NumPy 2 vs old matplotlib). Upgrading… ==="
+  pip install --quiet --upgrade 'matplotlib>=3.9' || {
+    echo "matplotlib upgrade failed; vis will fail. Run once on a login node:"
+    echo "  source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate && pip install -U 'matplotlib>=3.9'"
+    exit 1
+  }
+  python -c "import matplotlib, matplotlib.pyplot; print('matplotlib', matplotlib.__version__, 'OK')"
+fi
+
 export HR_DIR=$HOME/horizon-reduction
 export DGVISC_DIR="$HR_DIR/dual-goal-viscosity"
 export DGVISC_DATA_DIR=/scratch/gautschi/manors/ogbench_dgvisc/
@@ -127,6 +140,7 @@ COMMON=(
 
 run_vis "Paper (gcivl_dual)" "$PAPER_RUN" \
   --agent=agents/gcivl/state/dual.py \
+  --title="dgvisc_paper" \
   "${COMMON[@]}"
 
 run_vis "Paper + HJB (gcivl_dual_geodesic)" "$GEO_RUN" \
@@ -134,6 +148,7 @@ run_vis "Paper + HJB (gcivl_dual_geodesic)" "$GEO_RUN" \
   --agent.enable_geodesic_hjb=True \
   --agent.geo_kappa=0.01 \
   --agent.w_geo_hjb=0.5 \
+  --title="dgvisc_paper_plus_hjb" \
   "${COMMON[@]}"
 
 # vis.py writes to $DGVISC_DIR/plots/{Path(restore_path).name}-{save_prefix}.png
