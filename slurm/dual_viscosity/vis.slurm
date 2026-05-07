@@ -2,7 +2,7 @@
 #SBATCH --job-name=dgvisc_vis_both
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=64
 #SBATCH --time=01:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
