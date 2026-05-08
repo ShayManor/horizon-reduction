@@ -1,14 +1,14 @@
 #!/bin/bash -l
-#SBATCH --job-name=sharsa_smoothing_1b
+#SBATCH --job-name=phys_ant_1b
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=04:00:00
+#SBATCH --time=06:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/sgeo_p45_1b_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/sgeo_p45_1b_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/phys_ant_1b_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/phys_ant_1b_%j.err
 set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
@@ -26,22 +26,22 @@ unset JAX_PLATFORM_NAME
 mkdir -p /scratch/gautschi/manors/logs
 cd "$HR_DIR"
 
+# Method (c): SHARSA + phys (FK fixed-point) on antmaze-medium 1b.
 python main.py \
-  --run_group=basic_smoothing_p45_1b \
-  --seed=0 \
-  --env_name=puzzle-4x5-play-oraclerep-v0 \
-  --dataset_dir="$BASE/puzzle-4x5-play-1b-v0" \
+  --run_group=phys_ant_1b \
+  --seed=1 \
+  --env_name=antmaze-medium-navigate-v0 \
+  --dataset_dir="$BASE/antmaze-medium-navigate-1b-v0" \
   --dataset_replace_interval=1000 \
-  --agent=agents/sharsa_geodesic.py \
+  --agent=agents/sharsa.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
-  --agent.basic_smoothing=True \
-  --agent.w_geo=0.5 \
-  --agent.tightness_threshold=0.2 \
-  --agent.metric_rank=8 \
+  --agent.w_fk=1.0 \
+  --agent.viscous_scale=0.01 \
+  --agent.num_walks=10 \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \

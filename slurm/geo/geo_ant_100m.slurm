@@ -1,14 +1,14 @@
 #!/bin/bash -l
-#SBATCH --job-name=sharsa_p45_100m
+#SBATCH --job-name=geo_ant_100m
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=12:00:00
+#SBATCH --time=04:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/sgeo_p45_100m_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/sgeo_p45_100m_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/geo_ant_100m_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/geo_ant_100m_%j.err
 set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
@@ -26,18 +26,23 @@ unset JAX_PLATFORM_NAME
 mkdir -p /scratch/gautschi/manors/logs
 cd "$HR_DIR"
 
+# Method (d): SHARSA + geodesic HJB regularizer. w_geo=1.0; isotropic cost; no phys/FK.
 python main.py \
-  --run_group=baseline_sharsa_p45_100m \
-  --seed=0 \
-  --env_name=puzzle-4x5-play-oraclerep-v0 \
-  --dataset_dir="$BASE/puzzle-4x5-play-100m-v0" \
+  --run_group=geo_ant_100m \
+  --seed=1 \
+  --env_name=antmaze-medium-navigate-v0 \
+  --dataset_dir="$BASE/antmaze-medium-navigate-100m-v0" \
   --dataset_replace_interval=1000 \
-  --agent=agents/sharsa.py \
+  --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
+  --agent.use_anisotropic=False \
+  --agent.w_geo=1.0 \
+  --agent.tightness_threshold=0.1 \
+  --agent.metric_rank=8 \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \

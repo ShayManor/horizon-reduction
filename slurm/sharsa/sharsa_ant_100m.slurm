@@ -7,8 +7,8 @@
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
-#SBATCH -o /scratch/gautschi/manors/logs/sgeo_ant_100m_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/sgeo_ant_100m_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/sharsa_ant_100m_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/sharsa_ant_100m_%j.err
 set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
@@ -26,8 +26,9 @@ unset JAX_PLATFORM_NAME
 mkdir -p /scratch/gautschi/manors/logs
 cd "$HR_DIR"
 
+# Method (a): baseline SHARSA. phy_w=0, w_fk=0 (defaults).
 python main.py \
-  --run_group=baseline_sharsa_ant_100m \
+  --run_group=sharsa_ant_100m \
   --seed=1 \
   --env_name=antmaze-medium-navigate-v0 \
   --dataset_dir="$BASE/antmaze-medium-navigate-100m-v0" \
@@ -38,7 +39,6 @@ python main.py \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
-  --agent.gc_negative=True \
   --offline_steps=1000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
