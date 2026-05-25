@@ -26,7 +26,7 @@ flags.DEFINE_string('env_name', 'puzzle-4x5-play-oraclerep-v0', 'Environment (da
 flags.DEFINE_string('dataset_dir', None, 'Dataset directory.')
 flags.DEFINE_integer('dataset_replace_interval', 1000, 'Dataset replace interval.')
 flags.DEFINE_integer('num_datasets', None, 'Number of datasets to use.')
-flags.DEFINE_string('save_dir', 'exp/', 'Save directory.')
+flags.DEFINE_string('save_dir', os.environ.get('HR_EXP_DIR', 'exp/'), 'Save directory.')
 flags.DEFINE_string('restore_path', None, 'Restore path.')
 flags.DEFINE_integer('restore_epoch', None, 'Restore epoch.')
 

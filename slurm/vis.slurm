@@ -13,6 +13,9 @@ set -euo pipefail
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
 export BASE=/scratch/gautschi/manors/ogbench
+export HR_EXP_DIR=/scratch/gautschi/manors/exp
+export WANDB_DIR=/scratch/gautschi/manors/wandb
+export WANDB_CACHE_DIR=/scratch/gautschi/manors/wandb-cache
 export HR_DIR=$HOME/horizon-reduction
 export PYTHONPATH="$HR_DIR:${PYTHONPATH:-}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
@@ -22,7 +25,7 @@ export JAX_PLATFORMS=cpu
 unset DISPLAY
 unset JAX_PLATFORM_NAME
 
-mkdir -p /scratch/gautschi/manors/logs
+mkdir -p /scratch/gautschi/manors/logs "$HR_EXP_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR"
 cd "$HR_DIR"
 
 STAMP=$(date +%Y%m%d_%H%M%S)
