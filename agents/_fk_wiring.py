@@ -9,16 +9,25 @@ This codebase uses `high_value` / `high_value_goals`, has no separate goal
 encoder, and the dataset has no per-state speed. The proxies below remap the
 names so the FK function runs unchanged.
 """
+import jax
 import jax.numpy as jnp
 
 
 class _FKNetProxy:
-    def __init__(self, real_network):
+    def __init__(self, real_network, sigmoid_value):
         self._real = real_network
+        self._sigmoid_value = sigmoid_value
 
     def select(self, name):
         if name == 'value':
-            return self._real.select('high_value')
+            inner = self._real.select('high_value')
+            if not self._sigmoid_value:
+                return inner
+
+            def _value_sigmoid(*args, **kwargs):
+                return jax.nn.sigmoid(inner(*args, **kwargs))
+
+            return _value_sigmoid
         if name == 'rep_value':
             def _identity(x, **_kw):
                 return x
@@ -29,7 +38,8 @@ class _FKNetProxy:
 class FKAgentProxy:
     """Stand-in for `self` inside stochastic_fk_loss."""
     def __init__(self, agent):
-        self.network = _FKNetProxy(agent.network)
+        sigmoid_value = agent.config.get('value_loss_type', 'bce') == 'bce'
+        self.network = _FKNetProxy(agent.network, sigmoid_value)
         self.config = agent.config
 
 

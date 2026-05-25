@@ -58,13 +58,20 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
     # ------- dual-paper auxiliary loss --------------------------------------
 
     def rep_loss(self, batch, grad_params):
-        """IQL value+critic on the dual rep. Ported from dual.py:111-141.
+        """IQL value+critic on the dual rep. Ported from dual.py:111-141 with
+        sigmoid bounding for stability under SHARSA reward semantics.
 
         - rep_value (V_phi(s, g)) trained with expectile regression toward
-          rep_critic's min Q.
-        - rep_critic trained with one-step TD where the bootstrap is V_phi(s', g).
-        - Both share the bilinear `phi/psi` factorization through `rep_value`,
-          so updating these losses is the only way the goal representation moves.
+          rep_critic's min Q. Both wrapped in sigmoid before the loss so
+          everything stays in [0,1]; matches SHARSA's value_loss_type='bce'
+          stabilization. Without sigmoid the IQL loop diverges under
+          gc_negative=False + discount=0.999 (the companion repo avoids this
+          via gc_negative=True + discount=0.99; we can't switch globally
+          without breaking SHARSA's BCE high-level head).
+        - rep_critic trained with squared TD where the bootstrap is
+          sigmoid(V_phi(s', g)). With rewards in {0,1} and `mask=0 at goal`,
+          the TD target stays in [0,1], so squared loss against sigmoid'd Q
+          is well-behaved.
 
         HGCDataset doesn't emit `batch['value_goals']` (only `high_value_goals`),
         so we read the high-level goal — same goal-sampling distribution, just a
@@ -75,14 +82,23 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
         goals = batch['high_value_goals']
         actions = batch['actions']
 
-        q1, q2 = self.network.select('target_rep_critic')(obs, goals, actions)
-        q_min = jnp.minimum(q1, q2)
-        v = self.network.select('rep_value')(obs, goals, params=grad_params)
+        # Sigmoid-bound rep value + critic. Logits are kept for diagnostics only.
+        q1_logit, q2_logit = self.network.select('target_rep_critic')(obs, goals, actions)
+        q1_t, q2_t = jax.nn.sigmoid(q1_logit), jax.nn.sigmoid(q2_logit)
+        q_min = jnp.minimum(q1_t, q2_t)
+        v_logit = self.network.select('rep_value')(obs, goals, params=grad_params)
+        v = jax.nn.sigmoid(v_logit)
         value_loss = self.expectile_loss(q_min - v, q_min - v, self.config['rep_expectile']).mean()
 
-        next_v = self.network.select('rep_value')(next_obs, goals)
+        next_v_logit = self.network.select('rep_value')(next_obs, goals)
+        next_v = jax.nn.sigmoid(next_v_logit)
         td_target = batch['rewards'] + self.config['discount'] * batch['masks'] * next_v
-        q1_pred, q2_pred = self.network.select('rep_critic')(obs, goals, actions, params=grad_params)
+
+        q1_pred_logit, q2_pred_logit = self.network.select('rep_critic')(
+            obs, goals, actions, params=grad_params
+        )
+        q1_pred = jax.nn.sigmoid(q1_pred_logit)
+        q2_pred = jax.nn.sigmoid(q2_pred_logit)
         critic_loss = ((q1_pred - td_target) ** 2 + (q2_pred - td_target) ** 2).mean()
 
         total = value_loss + critic_loss
@@ -90,7 +106,12 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
             'value_loss': value_loss,
             'critic_loss': critic_loss,
             'v_mean': v.mean(),
-            'q_mean': td_target.mean(),
+            'v_max': v.max(),
+            'v_min': v.min(),
+            'v_logit_abs_mean': jnp.abs(v_logit).mean(),
+            'q_mean': q1_pred.mean(),
+            'td_target_mean': td_target.mean(),
+            'td_target_max': td_target.max(),
         }
 
     # ------- SHARSA losses, with goals routed through rep_value -------------
