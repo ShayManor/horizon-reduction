@@ -268,10 +268,9 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
 
         # Project the final goal through rep_value before high-level rejection sampling.
         goal_reps = self.network.select('rep_value')(goals)
-        goalrep_dim = self.config['goalrep_dim']
 
-        # High-level: rejection sampling over candidate subgoal *observations*,
-        # then project each candidate through rep_value to score with the critic.
+        # High-level: rejection sampling over candidate subgoal *observations*.
+        # Critic was trained with goals=psi(final_goal), so we score with the same.
         n_subgoals = jax.random.normal(
             high_seed,
             (self.config['num_samples'], *observations.shape[:-1], self.config['goal_dim']),
@@ -284,11 +283,7 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
             vels = self.network.select('high_actor_flow')(n_observations, n_goal_reps, n_subgoals, t)
             n_subgoals = n_subgoals + vels / self.config['flow_steps']
 
-        # Critic scoring: candidate subgoals are obs-shaped, so project them too.
-        n_subgoal_reps = self.network.select('rep_value')(
-            n_subgoals.reshape(-1, self.config['goal_dim'])
-        ).reshape((self.config['num_samples'], *observations.shape[:-1], goalrep_dim))
-        q = self.network.select('high_critic')(n_observations, goals=n_subgoal_reps, actions=n_subgoals).min(axis=0)
+        q = self.network.select('high_critic')(n_observations, goals=n_goal_reps, actions=n_subgoals).min(axis=0)
         subgoals = n_subgoals[jnp.argmax(q)]
 
         # Low-level: behavioral cloning, conditioned on the *raw* subgoal obs.
