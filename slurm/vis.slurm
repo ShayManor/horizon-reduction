@@ -8,7 +8,7 @@
 #SBATCH -p highmem
 #SBATCH -o /scratch/gautschi/manors/logs/vis_all_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/vis_all_%j.err
-set -euo pipefail
+set -uo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
@@ -33,11 +33,7 @@ OUT_DIR="$HR_DIR/plots/$STAMP"
 mkdir -p "$OUT_DIR"
 echo "=== Output dir: $OUT_DIR ==="
 
-ENV_NAME="antmaze-medium-navigate-v0"
-DATASET_DIR="$BASE/antmaze-medium-navigate-1b-v0"
-
 GOAL_IDX=42
-COMMON="--env_name=$ENV_NAME --dataset_dir=$DATASET_DIR --grid_size=100 --goal_idx=$GOAL_IDX --save_dir=$OUT_DIR/"
 
 # Resolve the most recent training run directory under a run_group (by mtime),
 # considering only runs that have at least one params_*.pkl checkpoint saved.
@@ -57,9 +53,13 @@ latest_run() {
 FAILED_LABELS=()
 SUCCEEDED_LABELS=()
 
+# Args: <label> <group> <env_name> <dataset_dir> <title> <agent.py-and-flags...>
 run_vis() {
   local label="$1"; shift
   local group="$1"; shift
+  local env_name="$1"; shift
+  local dataset_dir="$1"; shift
+  local title="$1"; shift
   local path
   path=$(latest_run "$group")
   if [ -z "$path" ]; then
@@ -68,8 +68,15 @@ run_vis() {
     return 0
   fi
   path="${path%/}"
-  echo "=== Visualizing: $label  ($path) ==="
-  if python vis.py "$@" --restore_path="$path" $COMMON; then
+  echo "=== Visualizing: $label  ($path)  env=$env_name ==="
+  if python vis.py "$@" \
+       --env_name="$env_name" \
+       --dataset_dir="$dataset_dir" \
+       --grid_size=100 \
+       --goal_idx=$GOAL_IDX \
+       --save_dir="$OUT_DIR/" \
+       --title="$title" \
+       --restore_path="$path"; then
     SUCCEEDED_LABELS+=("$label")
   else
     local rc=$?
@@ -79,56 +86,57 @@ run_vis() {
   return 0
 }
 
-# Baseline SHARSA
-run_vis "Baseline SHARSA" \
-  "baseline_sharsa_ant_1b" \
-  --agent=agents/sharsa.py \
-  --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --title=baseline_sharsa
+# The four methods, all on the 1b antmaze-medium training runs the user submitted
+# (job IDs 11403817–11403821). Each is visualized on two envs:
+#   - antmaze-medium-navigate-v0 (matches training; valid plot)
+#   - pointmaze-large-navigate-v0 (mismatched obs space; will likely fail at restore — kept by request)
+ENVS=(
+  "antmaze-medium-navigate-v0:$BASE/antmaze-medium-navigate-1b-v0:antmed"
+  "pointmaze-large-navigate-v0:$BASE/pointmaze-large-navigate-1b-v0:pointlarge"
+)
 
-# Basic Smoothing (skipped if not trained yet)
-run_vis "Basic Smoothing" \
-  "basic_smoothing_ant_1b" \
-  --agent=agents/sharsa_geodesic.py \
-  --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --agent.basic_smoothing=True \
-  --agent.w_geo=0.5 \
-  --title=basic_smoothing
+for spec in "${ENVS[@]}"; do
+  IFS=':' read -r ENV_NAME DATASET_DIR ENV_TAG <<< "$spec"
 
-# Geodesic (isotropic)
-run_vis "Geodesic Isotropic" \
-  "geo_aniso_ant_1b_dev" \
-  --agent=agents/sharsa_geodesic.py \
-  --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --agent.use_anisotropic=False \
-  --agent.w_geo=1.0 \
-  --title=sharsa_geodesic
+  # (a) Baseline SHARSA
+  run_vis "Baseline SHARSA [$ENV_TAG]" \
+    "sharsa_ant_1b" "$ENV_NAME" "$DATASET_DIR" "sharsa_${ENV_TAG}" \
+    --agent=agents/sharsa.py \
+    --agent.q_agg=min \
+    --agent.subgoal_steps=25
 
-# Geodesic + FK (sharsa_geodesic with stochastic Feynman-Kac viscous regularizer)
-run_vis "Geodesic + FK" \
-  "fk_ant_1b" \
-  --agent=agents/sharsa_geodesic.py \
-  --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --agent.use_fk_loss=True \
-  --agent.viscous_scale=0.01 \
-  --agent.num_walks=10 \
-  --agent.w_geo=1.0 \
-  --title=geodesic_fk
+  # (b) SHARSA + dual goal
+  run_vis "SHARSA + Dual [$ENV_TAG]" \
+    "dual_ant_1b" "$ENV_NAME" "$DATASET_DIR" "dual_${ENV_TAG}" \
+    --agent=agents/sharsa_dual.py \
+    --agent.q_agg=min \
+    --agent.subgoal_steps=25 \
+    --agent.rep_type=bilinear \
+    --agent.goalrep_dim=256 \
+    --agent.rep_expectile=0.9 \
+    --agent.rep_w=1.0
 
-# SHARSA + FK (baseline sharsa with stochastic Feynman-Kac viscous regularizer)
-run_vis "SHARSA + FK" \
-  "sharsa_fk_ant_1b" \
-  --agent=agents/sharsa.py \
-  --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --agent.w_fk=1.0 \
-  --agent.viscous_scale=0.01 \
-  --agent.num_walks=10 \
-  --title=sharsa_fk
+  # (c) SHARSA + phys (FK fixed-point)
+  run_vis "SHARSA + Phys (FK) [$ENV_TAG]" \
+    "phys_ant_1b" "$ENV_NAME" "$DATASET_DIR" "phys_${ENV_TAG}" \
+    --agent=agents/sharsa.py \
+    --agent.q_agg=min \
+    --agent.subgoal_steps=25 \
+    --agent.w_fk=1.0 \
+    --agent.viscous_scale=0.01 \
+    --agent.num_walks=10
+
+  # (d) SHARSA + geodesic HJB (isotropic)
+  run_vis "SHARSA + Geodesic HJB [$ENV_TAG]" \
+    "geo_ant_1b" "$ENV_NAME" "$DATASET_DIR" "geo_${ENV_TAG}" \
+    --agent=agents/sharsa_geodesic.py \
+    --agent.q_agg=min \
+    --agent.subgoal_steps=25 \
+    --agent.use_anisotropic=False \
+    --agent.w_geo=1.0 \
+    --agent.tightness_threshold=0.1 \
+    --agent.metric_rank=8
+done
 
 echo "=== Visualization summary ==="
 echo "Succeeded: ${SUCCEEDED_LABELS[*]:-(none)}"
