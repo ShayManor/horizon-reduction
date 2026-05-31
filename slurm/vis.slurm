@@ -86,28 +86,28 @@ run_vis() {
   return 0
 }
 
-# The four methods, all on the 1b antmaze-medium training runs the user submitted
-# (job IDs 11403817–11403821). Each is visualized on two envs:
-#   - antmaze-medium-navigate-v0 (matches training; valid plot)
-#   - pointmaze-large-navigate-v0 (mismatched obs space; will likely fail at restore — kept by request)
+# The four methods, visualized on both envs from the eval matrix:
+#   - antmaze-medium-navigate-v0       (run_group suffix: ant_1b)
+#   - humanoidmaze-giant-navigate-v0   (run_group suffix: humanoidgiant_1b)
+# Spec format: env_name:dataset_dir:env_tag:group_suffix
 ENVS=(
-  "antmaze-medium-navigate-v0:$BASE/antmaze-medium-navigate-1b-v0:antmed"
-  "pointmaze-large-navigate-v0:$BASE/pointmaze-large-navigate-1b-v0:pointlarge"
+  "antmaze-medium-navigate-v0:$BASE/antmaze-medium-navigate-1b-v0:antmed:ant_1b"
+  "humanoidmaze-giant-navigate-v0:$BASE/humanoidmaze-giant-navigate-1b-v0:humgiant:humanoidgiant_1b"
 )
 
 for spec in "${ENVS[@]}"; do
-  IFS=':' read -r ENV_NAME DATASET_DIR ENV_TAG <<< "$spec"
+  IFS=':' read -r ENV_NAME DATASET_DIR ENV_TAG GROUP_SUFFIX <<< "$spec"
 
   # (a) Baseline SHARSA
   run_vis "Baseline SHARSA [$ENV_TAG]" \
-    "sharsa_ant_1b" "$ENV_NAME" "$DATASET_DIR" "sharsa_${ENV_TAG}" \
+    "sharsa_${GROUP_SUFFIX}" "$ENV_NAME" "$DATASET_DIR" "sharsa_${ENV_TAG}" \
     --agent=agents/sharsa.py \
     --agent.q_agg=min \
     --agent.subgoal_steps=25
 
   # (b) SHARSA + dual goal
   run_vis "SHARSA + Dual [$ENV_TAG]" \
-    "dual_ant_1b" "$ENV_NAME" "$DATASET_DIR" "dual_${ENV_TAG}" \
+    "dual_${GROUP_SUFFIX}" "$ENV_NAME" "$DATASET_DIR" "dual_${ENV_TAG}" \
     --agent=agents/sharsa_dual.py \
     --agent.q_agg=min \
     --agent.subgoal_steps=25 \
@@ -118,7 +118,7 @@ for spec in "${ENVS[@]}"; do
 
   # (c) SHARSA + phys (FK fixed-point)
   run_vis "SHARSA + Phys (FK) [$ENV_TAG]" \
-    "phys_ant_1b" "$ENV_NAME" "$DATASET_DIR" "phys_${ENV_TAG}" \
+    "phys_${GROUP_SUFFIX}" "$ENV_NAME" "$DATASET_DIR" "phys_${ENV_TAG}" \
     --agent=agents/sharsa.py \
     --agent.q_agg=min \
     --agent.subgoal_steps=25 \
@@ -128,7 +128,7 @@ for spec in "${ENVS[@]}"; do
 
   # (d) SHARSA + geodesic HJB (isotropic)
   run_vis "SHARSA + Geodesic HJB [$ENV_TAG]" \
-    "geo_ant_1b" "$ENV_NAME" "$DATASET_DIR" "geo_${ENV_TAG}" \
+    "geo_${GROUP_SUFFIX}" "$ENV_NAME" "$DATASET_DIR" "geo_${ENV_TAG}" \
     --agent=agents/sharsa_geodesic.py \
     --agent.q_agg=min \
     --agent.subgoal_steps=25 \
