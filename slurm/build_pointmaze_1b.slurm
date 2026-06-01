@@ -3,18 +3,17 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=02:00:00
+#SBATCH --time=12:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p cpu
-#SBATCH --array=0-999%64
-#SBATCH -o /scratch/gautschi/manors/logs/build_pmlarge_1b_%A_%a.out
-#SBATCH -e /scratch/gautschi/manors/logs/build_pmlarge_1b_%A_%a.err
+#SBATCH -o /scratch/gautschi/manors/logs/build_pmlarge_1b_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/build_pmlarge_1b_%j.err
 set -euo pipefail
 
-# Builds pointmaze-large-navigate-1b-v0 via ogbench data_gen_scripts.
-# 1000 shards × 1000 trajectories × 1001 steps ≈ 1B transitions.
-# Adjust --array=0-N%K to build fewer shards (e.g. 0-99%64 for ~100M) or
-# raise concurrency K.
+# Builds pointmaze-large-navigate-1b-v0 via ogbench data_gen_scripts in a
+# single SLURM job. 1000 shards × 1000 trajectories × 1001 steps ≈ 1B
+# transitions, parallelized 64-way via xargs.
+# To build fewer shards (e.g. ~100M for a sanity comparison), reduce SHARDS.
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
@@ -30,22 +29,33 @@ export PYTHONPATH="$OGBENCH_SRC/impls:${PYTHONPATH:-}"
 mkdir -p /scratch/gautschi/manors/logs "$OUT_DIR"
 cd "$OGBENCH_SRC"
 
-SEED=$(printf '%04d' "$SLURM_ARRAY_TASK_ID")
-OUT="$OUT_DIR/pointmaze-large-navigate-v0-$SEED.npz"
+SHARDS=1000
+PARALLEL=64
 
-# Skip if this shard is already on disk (lets you re-run a partial array).
-if [ -s "$OUT" ]; then
-  echo "=== shard $SEED already exists, skipping ==="
-  exit 0
-fi
+gen_one() {
+  local i="$1"
+  local seed_str
+  seed_str=$(printf '%04d' "$i")
+  local out="$OUT_DIR/pointmaze-large-navigate-v0-$seed_str.npz"
+  if [ -s "$out" ]; then
+    echo "[$seed_str] already exists, skipping"
+    return 0
+  fi
+  echo "[$seed_str] generating -> $out"
+  python data_gen_scripts/generate_locomaze.py \
+    --seed="$i" \
+    --env_name=pointmaze-large-v0 \
+    --save_path="$out" \
+    --num_episodes=1000 \
+    --max_episode_steps=1001 \
+    --dataset_type=navigate
+}
+export -f gen_one
+export OUT_DIR
 
-echo "=== Generating shard $SEED -> $OUT ==="
-python data_gen_scripts/generate_locomaze.py \
-  --seed="$SLURM_ARRAY_TASK_ID" \
-  --env_name=pointmaze-large-v0 \
-  --save_path="$OUT" \
-  --num_episodes=1000 \
-  --max_episode_steps=1001 \
-  --dataset_type=navigate
+seq 0 $((SHARDS - 1)) \
+  | xargs -n 1 -P "$PARALLEL" -I{} bash -c 'gen_one "$@"' _ {}
 
-echo "=== shard $SEED done ==="
+echo "=== Build complete ==="
+ls "$OUT_DIR" | wc -l
+du -sh "$OUT_DIR"
