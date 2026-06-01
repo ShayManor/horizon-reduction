@@ -15,7 +15,7 @@ source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
 export OGBENCH_SRC=/scratch/gautschi/manors/ogbench/ogbench
 export OUT_DIR=/scratch/gautschi/manors/ogbench/pointmaze-large-navigate-1b-v0
-export PYTHONPATH="$OGBENCH_SRC/impls:${PYTHONPATH:-}"
+export PYTHONPATH="$OGBENCH_SRC/impls"
 
 mkdir -p /scratch/gautschi/manors/logs "$OUT_DIR"
 cd "$OGBENCH_SRC"
