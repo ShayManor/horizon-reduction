@@ -10,7 +10,6 @@
 #SBATCH -o /scratch/gautschi/manors/logs/build_pmlarge_1b_%j.out
 #SBATCH -e /scratch/gautschi/manors/logs/build_pmlarge_1b_%j.err
 set -euo pipefail
-
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
 export OGBENCH_SRC=/scratch/gautschi/manors/ogbench-src

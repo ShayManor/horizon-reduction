@@ -39,11 +39,12 @@ python main.py \
   --agent=agents/sharsa_dual.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
+  --agent.discount=0.99 \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
   --agent.rep_type=bilinear \
-  --agent.goalrep_dim=256 \
+  --agent.goalrep_dim=64 \
   --agent.rep_expectile=0.9 \
   --agent.rep_w=1.0 \
   --offline_steps=1000000 \
