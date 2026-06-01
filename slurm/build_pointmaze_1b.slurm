@@ -13,9 +13,13 @@ set -euo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
 
-export OGBENCH_SRC=/scratch/gautschi/manors/ogbench/ogbench
+export OGBENCH_SRC=/scratch/gautschi/manors/ogbench-src
 export OUT_DIR=/scratch/gautschi/manors/ogbench/pointmaze-large-navigate-1b-v0
+# Override (don't append) — inherited PYTHONPATH from horizon-reduction shadows
+# ogbench's impls/agents and breaks `from agents import SACAgent`.
 export PYTHONPATH="$OGBENCH_SRC/impls"
+# Force CPU — 64 workers on one GPU all OOM. Pointmaze gen is CPU-bound.
+export JAX_PLATFORMS=cpu
 
 mkdir -p /scratch/gautschi/manors/logs "$OUT_DIR"
 cd "$OGBENCH_SRC"
