@@ -1,13 +1,13 @@
 #!/bin/bash -l
-#SBATCH --job-name=vis_all
+#SBATCH --job-name=vis_humanoid
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=96
 #SBATCH --time=01:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p highmem
-#SBATCH -o /scratch/gautschi/manors/logs/vis_all_%j.out
-#SBATCH -e /scratch/gautschi/manors/logs/vis_all_%j.err
+#SBATCH -o /scratch/gautschi/manors/logs/vis_humanoid_%j.out
+#SBATCH -e /scratch/gautschi/manors/logs/vis_humanoid_%j.err
 set -uo pipefail
 
 source /scratch/gautschi/manors/venvs/ogbench-py311/bin/activate
@@ -86,12 +86,9 @@ run_vis() {
   return 0
 }
 
-# The four methods, visualized on both envs from the eval matrix:
-#   - antmaze-medium-navigate-v0       (run_group suffix: ant_1b)
-#   - humanoidmaze-giant-navigate-v0   (run_group suffix: humanoidgiant_1b)
+# The four methods on humanoidmaze-giant 1b.
 # Spec format: env_name:dataset_dir:env_tag:group_suffix
 ENVS=(
-  "antmaze-medium-navigate-v0:$BASE/antmaze-medium-navigate-1b-v0:antmed:ant_1b"
   "humanoidmaze-giant-navigate-v0:$BASE/humanoidmaze-giant-navigate-1b-v0:humgiant:humanoidgiant_1b"
 )
 
@@ -162,7 +159,7 @@ else
     SSH_URL="git@github.com:ShayManor/horizon-reduction.git"
     export GIT_TERMINAL_PROMPT=0
     export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
-    git -c user.name="shaymanor" -c user.email="shay.manor@gmail.com" commit -m "vis: value contour plots $STAMP" || true
+    git -c user.name="shaymanor" -c user.email="shay.manor@gmail.com" commit -m "vis: humanoidmaze-giant value contour plots $STAMP" || true
     git pull --rebase --autostash "$SSH_URL" "$BRANCH" || echo "git pull/rebase failed (continuing to push attempt)"
     if git push "$SSH_URL" "HEAD:$BRANCH"; then
       echo "git push OK"
