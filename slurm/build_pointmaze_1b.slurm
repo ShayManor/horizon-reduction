@@ -2,7 +2,7 @@
 #SBATCH --job-name=build_pmlarge_1b
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
+#SBATCH --cpus-per-task=64
 #SBATCH --time=02:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p cpu
