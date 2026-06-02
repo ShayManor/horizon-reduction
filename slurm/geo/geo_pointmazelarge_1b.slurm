@@ -48,7 +48,7 @@ python main.py \
   --agent.tightness_threshold=0.1 \
   --agent.metric_rank=8 \
   --offline_steps=1000000 \
-  --eval_interval=250000 \
+  --eval_interval=50000 \
   --save_interval=500000 \
   --log_interval=50000 \
   --video_episodes=0

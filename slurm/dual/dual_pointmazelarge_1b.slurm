@@ -48,7 +48,7 @@ python main.py \
   --agent.rep_expectile=0.9 \
   --agent.rep_w=1.0 \
   --offline_steps=1000000 \
-  --eval_interval=250000 \
+  --eval_interval=50000 \
   --save_interval=500000 \
   --log_interval=50000 \
   --video_episodes=0
