@@ -39,7 +39,6 @@ python main.py \
   --agent=agents/sharsa.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
-  --agent.discount=0.99 \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
