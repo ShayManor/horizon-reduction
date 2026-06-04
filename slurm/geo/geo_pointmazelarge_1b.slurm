@@ -35,7 +35,7 @@ python main.py \
   --seed=1 \
   --env_name=pointmaze-large-navigate-v0 \
   --dataset_dir="$BASE/pointmaze-large-navigate-1b-v0" \
-  --dataset_replace_interval=1000 \
+  --dataset_replace_interval=50000 \
   --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
