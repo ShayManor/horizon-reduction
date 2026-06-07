@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
@@ -44,7 +44,7 @@ python main.py \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
-  --offline_steps=1000000 \
+  --offline_steps=5000000 \
   --eval_interval=50000 \
   --save_interval=500000 \
   --log_interval=50000 \

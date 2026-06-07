@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64
-#SBATCH --time=06:00:00
+#SBATCH --time=12:00:00
 #SBATCH -A lilly-rob1
 #SBATCH -p smallgpu
 #SBATCH --gres=gpu:1
@@ -46,7 +46,7 @@ python main.py \
   --agent.w_geo=1.0 \
   --agent.tightness_threshold=0.1 \
   --agent.metric_rank=8 \
-  --offline_steps=1000000 \
+  --offline_steps=5000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
   --log_interval=50000 \
