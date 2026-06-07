@@ -39,6 +39,8 @@ python main.py \
   --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
+  --agent.value_hidden_dims='(256,256,256)' \
+  --agent.actor_hidden_dims='(256,256,256)' \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
