@@ -46,7 +46,7 @@ latest_run() {
       printf '%s\n' "$d"
       return 0
     fi
-  done < <(ls -1dt "exp/horizon-reduction/$group"/sd*/ 2>/dev/null || true)
+  done < <(ls -1dt "$HR_EXP_DIR/goal_representation/$group"/sd*/ 2>/dev/null || true)
   return 0
 }
 
@@ -63,7 +63,7 @@ run_vis() {
   local path
   path=$(latest_run "$group")
   if [ -z "$path" ]; then
-    echo "=== Skipping: $label (no run found under exp/horizon-reduction/$group) ==="
+    echo "=== Skipping: $label (no run found under $HR_EXP_DIR/goal_representation/$group) ==="
     FAILED_LABELS+=("$label (no run dir)")
     return 0
   fi
