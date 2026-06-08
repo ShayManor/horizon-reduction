@@ -89,8 +89,19 @@ def main(_):
     )
 
     # Restore agent.
+    start_step = 1
     if FLAGS.restore_path is not None:
         agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
+        # Resume: continue counting from restore_epoch+1 so wandb step,
+        # eval/save cadences, and shard rotation all line up with the parent run.
+        start_step = FLAGS.restore_epoch + 1
+        if FLAGS.dataset_replace_interval != 0 and len(datasets) > 1:
+            dataset_idx = (FLAGS.restore_epoch // FLAGS.dataset_replace_interval) % len(datasets)
+            train_dataset, val_dataset = make_env_and_datasets(
+                FLAGS.env_name, dataset_path=datasets[dataset_idx], dataset_only=True, cur_env=env
+            )
+            train_dataset = dataset_class(Dataset.create(**train_dataset), config)
+            val_dataset = dataset_class(Dataset.create(**val_dataset), config)
 
     # Train agent.
     train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
@@ -98,7 +109,7 @@ def main(_):
     first_time = time.time()
     last_time = time.time()
 
-    for i in tqdm.tqdm(range(1, FLAGS.offline_steps + 1), smoothing=0.1, dynamic_ncols=True):
+    for i in tqdm.tqdm(range(start_step, FLAGS.offline_steps + 1), smoothing=0.1, dynamic_ncols=True):
         batch = train_dataset.sample(config['batch_size'])
         agent, update_info = agent.update(batch)
 

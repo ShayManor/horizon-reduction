@@ -29,7 +29,11 @@ unset JAX_PLATFORM_NAME
 mkdir -p /scratch/gautschi/manors/logs "$HR_EXP_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR"
 cd "$HR_DIR"
 
+source "$HR_DIR/slurm/_resume.sh"
+
 # Method (b): SHARSA + dual goal paper loss on humanoidmaze-giant 1b.
+apply_resume_args "dual_humanoidgiant_1b"
+
 python main.py \
   --run_group=dual_humanoidgiant_1b \
   --seed=1 \
@@ -50,4 +54,5 @@ python main.py \
   --eval_interval=250000 \
   --save_interval=500000 \
   --log_interval=50000 \
-  --video_episodes=0
+  --video_episodes=0 \
+  $RESUME_ARGS
