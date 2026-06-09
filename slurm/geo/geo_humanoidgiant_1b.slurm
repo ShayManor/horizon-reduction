@@ -37,15 +37,15 @@ apply_resume_args "geo_humanoidgiant_1b"
 python main.py \
   --run_group=geo_humanoidgiant_1b \
   --seed=1 \
-  --env_name=humanoidmaze-giant-navigate-v0 \
+  --env_name=humanoidmaze-giant-navigate-oraclerep-v0 \
   --dataset_dir="$BASE/humanoidmaze-giant-navigate-1b-v0" \
-  --dataset_replace_interval=1000 \
+  --dataset_replace_interval=4000 \
   --agent=agents/sharsa_geodesic.py \
-  --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --agent.actor_p_trajgoal=0.5 \
-  --agent.actor_p_randomgoal=0.5 \
-  --agent.actor_geom_sample=True \
+  --agent.q_agg=mean \
+  --agent.subgoal_steps=50 \
+  --agent.actor_p_trajgoal=1.0 \
+  --agent.actor_p_randomgoal=0.0 \
+  --agent.actor_geom_sample=False \
   --agent.use_anisotropic=False \
   --agent.w_geo=1.0 \
   --agent.tightness_threshold=0.1 \

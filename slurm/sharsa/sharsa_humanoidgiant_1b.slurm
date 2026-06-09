@@ -37,15 +37,15 @@ apply_resume_args "sharsa_humanoidgiant_1b"
 python main.py \
   --run_group=sharsa_humanoidgiant_1b \
   --seed=1 \
-  --env_name=humanoidmaze-giant-navigate-v0 \
+  --env_name=humanoidmaze-giant-navigate-oraclerep-v0 \
   --dataset_dir="$BASE/humanoidmaze-giant-navigate-1b-v0" \
-  --dataset_replace_interval=1000 \
+  --dataset_replace_interval=4000 \
   --agent=agents/sharsa.py \
-  --agent.q_agg=min \
-  --agent.subgoal_steps=25 \
-  --agent.actor_p_trajgoal=0.5 \
-  --agent.actor_p_randomgoal=0.5 \
-  --agent.actor_geom_sample=True \
+  --agent.q_agg=mean \
+  --agent.subgoal_steps=50 \
+  --agent.actor_p_trajgoal=1.0 \
+  --agent.actor_p_randomgoal=0.0 \
+  --agent.actor_geom_sample=False \
   --offline_steps=5000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
