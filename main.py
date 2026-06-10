@@ -17,6 +17,7 @@ from utils.datasets import Dataset, GCDataset, HGCDataset
 from utils.evaluation import evaluate
 from utils.flax_utils import restore_agent, save_agent
 from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
+from utils.prefetch import ShardPrefetcher
 
 FLAGS = flags.FLAGS
 
@@ -103,6 +104,18 @@ def main(_):
             train_dataset = dataset_class(Dataset.create(**train_dataset), config)
             val_dataset = dataset_class(Dataset.create(**val_dataset), config)
 
+    # Prefetch the next dataset shard in the background so the boundary swap
+    # below does not stall the GPU on the synchronous npz load.
+    def load_shard(idx):
+        train_d, val_d = make_env_and_datasets(
+            FLAGS.env_name, dataset_path=datasets[idx], dataset_only=True, cur_env=env
+        )
+        return dataset_class(Dataset.create(**train_d), config), dataset_class(Dataset.create(**val_d), config)
+
+    prefetcher = None
+    if FLAGS.dataset_replace_interval != 0 and len(datasets) > 1:
+        prefetcher = ShardPrefetcher(load_shard, len(datasets), dataset_idx)
+
     # Train agent.
     train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
     eval_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'eval.csv'))
@@ -172,12 +185,7 @@ def main(_):
             save_agent(agent, FLAGS.save_dir, i)
 
         if FLAGS.dataset_replace_interval != 0 and i % FLAGS.dataset_replace_interval == 0 and len(datasets) > 1:
-            dataset_idx = (dataset_idx + 1) % len(datasets)
-            train_dataset, val_dataset = make_env_and_datasets(
-                FLAGS.env_name, dataset_path=datasets[dataset_idx], dataset_only=True, cur_env=env
-            )
-            train_dataset = dataset_class(Dataset.create(**train_dataset), config)
-            val_dataset = dataset_class(Dataset.create(**val_dataset), config)
+            dataset_idx, train_dataset, val_dataset = prefetcher.get_next()
 
     train_logger.close()
     eval_logger.close()

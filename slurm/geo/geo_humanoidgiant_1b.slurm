@@ -19,7 +19,6 @@ export WANDB_DIR=/scratch/gautschi/manors/wandb
 export WANDB_CACHE_DIR=/scratch/gautschi/manors/wandb-cache
 export HR_DIR=$HOME/horizon-reduction
 export PYTHONPATH="$HR_DIR:${PYTHONPATH:-}"
-export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 unset DISPLAY
