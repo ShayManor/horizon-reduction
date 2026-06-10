@@ -22,27 +22,27 @@ from agents.sharsa_dual import SHARSADualAgent, get_config as get_dual_config
 B, D, A, G = 4, 6, 3, 6  # batch, obs-dim, action-dim, goal-dim
 
 
-def make_example_batch(seed=0):
+def make_example_batch(seed=0, d=D, g=G, a=A):
     rng = np.random.RandomState(seed)
     return {
-        'observations': rng.randn(B, D).astype(np.float32),
-        'next_observations': rng.randn(B, D).astype(np.float32),
-        'actions': rng.randn(B, A).astype(np.float32),
+        'observations': rng.randn(B, d).astype(np.float32),
+        'next_observations': rng.randn(B, d).astype(np.float32),
+        'actions': rng.randn(B, a).astype(np.float32),
         'rewards': rng.uniform(0.0, 1.0, size=(B,)).astype(np.float32),
         'masks': np.ones(B, dtype=np.float32),
-        'high_actor_actions': rng.randn(B, G).astype(np.float32),
-        'high_actor_goals': rng.randn(B, G).astype(np.float32),
-        'high_value_goals': rng.randn(B, G).astype(np.float32),
-        'high_value_actions': rng.randn(B, G).astype(np.float32),
-        'high_value_next_observations': rng.randn(B, D).astype(np.float32),
+        'high_actor_actions': rng.randn(B, g).astype(np.float32),
+        'high_actor_goals': rng.randn(B, g).astype(np.float32),
+        'high_value_goals': rng.randn(B, g).astype(np.float32),
+        'high_value_actions': rng.randn(B, g).astype(np.float32),
+        'high_value_next_observations': rng.randn(B, d).astype(np.float32),
         'high_value_subgoal_steps': rng.randint(1, 25, size=(B,)).astype(np.float32),
         'high_value_masks': np.ones(B, dtype=np.float32),
         'high_value_rewards': rng.uniform(0.0, 1.0, size=(B,)).astype(np.float32),
-        'low_actor_goals': rng.randn(B, G).astype(np.float32),
+        'low_actor_goals': rng.randn(B, g).astype(np.float32),
     }
 
 
-def make_dual(**overrides):
+def make_dual(d=D, g=G, a=A, **overrides):
     cfg = get_dual_config()
     cfg['value_hidden_dims'] = (16, 16)
     cfg['actor_hidden_dims'] = (16, 16)
@@ -50,9 +50,19 @@ def make_dual(**overrides):
     cfg['goalrep_dim'] = 8
     for k, v in overrides.items():
         cfg[k] = v
-    batch = make_example_batch()
+    batch = make_example_batch(d=d, g=g, a=a)
     agent = SHARSADualAgent.create(seed=0, example_batch=batch, config=cfg)
     return agent, batch
+
+
+def test_total_loss_finite_when_goal_dim_differs_from_obs_dim():
+    """Regression for the oraclerep crash: with goal_dim (2) != obs_dim (6),
+    rep_value's goal-encoder path must encode psi(g) without feeding phi a
+    goal-shaped dummy (which raised ScopeParamShapeError on humanoidmaze-giant
+    oraclerep, where obs=69 / goal=2)."""
+    agent, batch = make_dual(d=6, g=2)
+    loss, info = agent.total_loss(batch, grad_params=agent.network.params, rng=jax.random.PRNGKey(7))
+    assert jnp.isfinite(loss).all(), f"non-finite total loss: {loss}"
 
 
 def test_agent_constructs():

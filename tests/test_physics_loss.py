@@ -21,22 +21,22 @@ from agents.sharsa_geodesic import SHARSAGeodesicAgent, get_config as get_sgeo_c
 B, D, A, G = 4, 6, 3, 6  # batch, obs-dim, action-dim, goal/rep-dim (== D so 'distance' mode works)
 
 
-def make_example_batch(seed=0):
+def make_example_batch(seed=0, d=D, g=G, a=A):
     rng = np.random.RandomState(seed)
     return {
-        'observations': rng.randn(B, D).astype(np.float32),
-        'actions': rng.randn(B, A).astype(np.float32),
-        'high_actor_actions': rng.randn(B, G).astype(np.float32),
-        'high_actor_goals': rng.randn(B, G).astype(np.float32),
-        'high_value_goals': rng.randn(B, G).astype(np.float32),
-        'high_value_actions': rng.randn(B, G).astype(np.float32),
-        'high_value_next_observations': rng.randn(B, D).astype(np.float32),
+        'observations': rng.randn(B, d).astype(np.float32),
+        'actions': rng.randn(B, a).astype(np.float32),
+        'high_actor_actions': rng.randn(B, g).astype(np.float32),
+        'high_actor_goals': rng.randn(B, g).astype(np.float32),
+        'high_value_goals': rng.randn(B, g).astype(np.float32),
+        'high_value_actions': rng.randn(B, g).astype(np.float32),
+        'high_value_next_observations': rng.randn(B, d).astype(np.float32),
         'high_value_subgoal_steps': rng.randint(1, 25, size=(B,)).astype(np.float32),
         'high_value_masks': np.ones(B, dtype=np.float32),
         'high_value_rewards': rng.uniform(0.0, 1.0, size=(B,)).astype(np.float32),
         'high_value_goal_type': rng.randint(0, 3, size=(B,)).astype(np.int32),
-        'high_value_reps': rng.randn(B, G).astype(np.float32),
-        'low_actor_goals': rng.randn(B, G).astype(np.float32),
+        'high_value_reps': rng.randn(B, g).astype(np.float32),
+        'low_actor_goals': rng.randn(B, g).astype(np.float32),
     }
 
 
@@ -72,6 +72,19 @@ AGENT_FACTORIES = [
 
 
 # ---------- tests ----------------------------------------------------------------
+
+
+def test_fk_loss_runs_with_oraclerep_goal_dim():
+    """phys method (c): sharsa + w_fk=1.0 on oraclerep, where goal_dim (2) !=
+    obs_dim (6). The FK regularizer perturbs observations and routes goals
+    through high_value, so total_loss must run without a shape error."""
+    cfg = _shrink(get_sharsa_config())
+    cfg['w_fk'] = 1.0
+    batch = make_example_batch(d=6, g=2)
+    agent = SHARSAAgent.create(seed=0, example_batch=batch, config=cfg)
+    total, info = agent.total_loss(batch, agent.network.params, rng=jax.random.PRNGKey(11))
+    assert jnp.isfinite(total).all(), f'non-finite total loss: {total}'
+    assert jnp.isfinite(info['fk/fk_contrib']).all()
 
 
 @pytest.mark.parametrize('factory', AGENT_FACTORIES)

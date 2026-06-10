@@ -314,6 +314,7 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
         rep_value_def = DualRepresentationValue(config['rep_type'])(
             hidden_dims=config['rep_hidden_dims'],
             latent_dim=goalrep_dim,
+            obs_dim=ex_observations.shape[-1],
             layer_norm=config['layer_norm'],
         )
         rep_critic_def = GCValue(

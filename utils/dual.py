@@ -34,6 +34,7 @@ class GCBilinearRepresentationValue(nn.Module):
 
     hidden_dims: Sequence[int]
     latent_dim: int
+    obs_dim: int
     layer_norm: bool = True
 
     def setup(self):
@@ -48,8 +49,13 @@ class GCBilinearRepresentationValue(nn.Module):
     def __call__(self, observations, goals=None):
         if goals is not None:
             return self.network(observations, goals, actions=None, info=False)
-        dummy = jnp.zeros_like(observations)
-        _, _, psi = self.network(dummy, observations, actions=None, info=True)
+        # Goal-encoder path: `observations` is a batch of goals. We only want
+        # psi(goals), but GCBilinearValue always evaluates phi on its first arg,
+        # so phi needs an obs-shaped input — its value is unused. A goal-shaped
+        # dummy breaks when goal_dim != obs_dim (e.g. oraclerep goals).
+        goals = observations
+        dummy = jnp.zeros((*goals.shape[:-1], self.obs_dim), dtype=goals.dtype)
+        _, _, psi = self.network(dummy, goals, actions=None, info=True)
         return psi
 
 
