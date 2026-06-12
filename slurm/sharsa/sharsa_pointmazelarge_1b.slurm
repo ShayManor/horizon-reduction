@@ -31,15 +31,21 @@ cd "$HR_DIR"
 
 source "$HR_DIR/slurm/_resume.sh"
 
-# Method (a): baseline SHARSA on pointmaze-large 1b.
-apply_resume_args "sharsa_pointmazelarge_1b"
+# Bisection experiment: baseline SHARSA on pointmaze-large using the STANDARD
+# OGBench dataset (no --dataset_dir -> OGBench loads its built-in dataset).
+# If this works, the custom 1b dataset is the culprit; if it still fails, the
+# bug is in our SHARSA pointmaze config/eval, not the data.
+apply_resume_args "sharsa_pointmazelarge_std"
+
+# Materialize the standard OGBench dataset into the cache before training so the
+# run fails fast with a clear message if the compute node has no internet
+# (instead of stalling mid-init). No-op if already cached.
+python -c "import ogbench; ogbench.make_env_and_datasets('pointmaze-large-navigate-v0', compact_dataset=True)"
 
 python main.py \
-  --run_group=sharsa_pointmazelarge_1b \
+  --run_group=sharsa_pointmazelarge_std \
   --seed=1 \
   --env_name=pointmaze-large-navigate-v0 \
-  --dataset_dir="$BASE/pointmaze-large-navigate-1b-v0" \
-  --dataset_replace_interval=1000 \
   --agent=agents/sharsa.py \
   --agent.q_agg=mean \
   --agent.subgoal_steps=25 \
@@ -48,7 +54,7 @@ python main.py \
   --agent.actor_p_trajgoal=1.0 \
   --agent.actor_p_randomgoal=0.0 \
   --agent.actor_geom_sample=False \
-  --offline_steps=5000000 \
+  --offline_steps=1000000 \
   --eval_interval=50000 \
   --save_interval=500000 \
   --log_interval=50000 \

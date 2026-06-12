@@ -115,8 +115,10 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
 
     # ------- SHARSA losses, with goals routed through rep_value -------------
 
-    def high_value_loss(self, batch, grad_params):
-        goal_reps = self.network.select('rep_value')(batch['high_value_goals'])
+    def high_value_loss(self, batch, grad_params, goal_reps):
+        # goal_reps = rep_value(batch['high_value_goals']), computed once in
+        # total_loss and shared with high_critic_loss (identical input, no grad
+        # into the rep here) to avoid a redundant rep_value pass.
         q1, q2 = self.network.select('target_high_critic')(
             batch['observations'], goals=goal_reps, actions=batch['high_value_actions']
         )
@@ -144,8 +146,8 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
             'v_min': v.min(),
         }
 
-    def high_critic_loss(self, batch, grad_params):
-        goal_reps = self.network.select('rep_value')(batch['high_value_goals'])
+    def high_critic_loss(self, batch, grad_params, goal_reps):
+        # Shares goal_reps with high_value_loss (see note there).
         next_v = self.network.select('high_value')(batch['high_value_next_observations'], goal_reps)
         if self.config['value_loss_type'] == 'bce':
             next_v = jax.nn.sigmoid(next_v)
@@ -215,11 +217,16 @@ class SHARSADualAgent(flax.struct.PyTreeNode):
         rng = rng if rng is not None else self.rng
         rng, high_actor_rng, low_actor_rng = jax.random.split(rng, 3)
 
-        high_value_loss, high_value_info = self.high_value_loss(batch, grad_params)
+        # Shared goal projection: rep_value(high_value_goals) is identical in
+        # high_value_loss and high_critic_loss and carries no gradient there, so
+        # compute it once and pass it to both.
+        value_goal_reps = self.network.select('rep_value')(batch['high_value_goals'])
+
+        high_value_loss, high_value_info = self.high_value_loss(batch, grad_params, value_goal_reps)
         for k, v in high_value_info.items():
             info[f'high_value/{k}'] = v
 
-        high_critic_loss, high_critic_info = self.high_critic_loss(batch, grad_params)
+        high_critic_loss, high_critic_info = self.high_critic_loss(batch, grad_params, value_goal_reps)
         for k, v in high_critic_info.items():
             info[f'high_critic/{k}'] = v
 
