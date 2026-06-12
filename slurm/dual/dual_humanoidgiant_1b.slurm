@@ -49,7 +49,7 @@ python main.py \
   --agent.goalrep_dim=256 \
   --agent.rep_expectile=0.9 \
   --agent.rep_w=1.0 \
-  --offline_steps=5000000 \
+  --offline_steps=3000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
   --log_interval=50000 \

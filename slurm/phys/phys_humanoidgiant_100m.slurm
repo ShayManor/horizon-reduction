@@ -48,7 +48,7 @@ python main.py \
   --agent.w_fk=1.0 \
   --agent.viscous_scale=0.01 \
   --agent.num_walks=10 \
-  --offline_steps=5000000 \
+  --offline_steps=3000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
   --log_interval=50000 \
