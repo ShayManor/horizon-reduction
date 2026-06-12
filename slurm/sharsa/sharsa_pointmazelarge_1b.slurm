@@ -48,9 +48,7 @@ python main.py \
   --env_name=pointmaze-large-navigate-v0 \
   --agent=agents/sharsa.py \
   --agent.q_agg=mean \
-  --agent.subgoal_steps=25 \
-  --agent.value_hidden_dims='(256,256,256)' \
-  --agent.actor_hidden_dims='(256,256,256)' \
+  --agent.subgoal_steps=50 \
   --agent.actor_p_trajgoal=1.0 \
   --agent.actor_p_randomgoal=0.0 \
   --agent.actor_geom_sample=False \
