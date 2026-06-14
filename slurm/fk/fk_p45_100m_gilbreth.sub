@@ -1,0 +1,50 @@
+#!/bin/bash
+#SBATCH --job-name=fk-p45-100m-kumar556
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=64G
+#SBATCH --gpus-per-node=1
+#SBATCH --qos=normal
+#SBATCH --partition=a100-80gb
+#SBATCH --output=slurm-logs/slurm-%j-%x.out
+#SBATCH --mail-type=END,FAIL,TIME_LIMIT
+#SBATCH --mail-user=kumar556@purdue.edu
+#SBATCH --time=25:00:00
+
+# --------- setup ---------
+ml gcc/11.5.0
+ml conda
+
+echo "*** Available GPUs: $CUDA_VISIBLE_DEVICES ***"
+echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+
+CONDAENVNAME=/depot/bera89/data/kumar556/horizon_rl
+conda activate $CONDAENVNAME
+
+export MUJOCO_GL=egl
+export PYOPENGL_PLATFORM=egl
+unset DISPLAY
+export LD_LIBRARY_PATH=/depot/bera89/data/kumar556/horizon_rl/lib/python3.10/site-packages/nvidia/cusparse/lib:/depot/bera89/data/kumar556/horizon_rl/lib/python3.10/site-packages/nvidia/cublas/lib:/depot/bera89/data/kumar556/horizon_rl/lib/python3.10/site-packages/nvidia/cudnn/lib:/depot/bera89/data/kumar556/horizon_rl/lib/python3.10/site-packages/nvidia/nvjitlink/lib:$LD_LIBRARY_PATH
+
+cd /scratch/gilbreth/kumar556/horizon-reduction
+
+echo "Starting FK Eval script..."
+python main.py \
+  --run_group=puzzle_experiments \
+  --env_name=puzzle-4x5-play-oraclerep-v0 \
+  --dataset_dir=data/puzzle-4x5-play-100m-v0 \
+  --dataset_replace_interval=1000 \
+  --agent=agents/sharsa_geodesic.py \
+  --agent.q_agg=min \
+  --agent.subgoal_steps=25 \
+  --agent.actor_p_trajgoal=0.5 \
+  --agent.actor_p_randomgoal=0.5 \
+  --agent.actor_geom_sample=True \
+  --agent.use_anisotropic=False \
+  --agent.w_geo=1.0 \
+  --agent.tightness_threshold=0.2 \
+  --agent.metric_rank=8 \
+  --agent.use_fk_loss=True \
+  --agent.viscous_scale=0.01 \
+  --agent.num_walks=10

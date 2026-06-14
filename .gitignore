@@ -9,3 +9,5 @@ dist/
 CLAUDE.md
 exp/
 docs/
+slurm/*/slurm-logs/*
+data/

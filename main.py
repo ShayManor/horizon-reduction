@@ -41,6 +41,7 @@ flags.DEFINE_float('eval_gaussian', None, 'Action Gaussian noise for evaluation.
 flags.DEFINE_integer('video_episodes', 1, 'Number of video episodes for each task.')
 flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
 flags.DEFINE_integer('verbose', 0, 'Verbosity level.')
+flags.DEFINE_bool('enable_fk_regularization', False, 'Flag to explicitly log fk in wandb.')
 
 config_flags.DEFINE_config_file('agent', 'agents/sharsa.py', lock_config=False)
 
@@ -49,7 +50,8 @@ def main(_):
     # Set up logger.
     exp_name = get_exp_name(FLAGS.seed)
     setting = str(FLAGS.agent['agent_name']).split('/')[-1].split('.')[0]
-    enable_fk = FLAGS.agent.get('enable_fk_regularization', False)
+    # enable_fk = FLAGS.agent.get('enable_fk_regularization', False)
+    enable_fk = FLAGS.enable_fk_regularization
     fk_key = 'fk_' if enable_fk else 'no_fk_'
     use_viscous_metric = FLAGS.agent.get('enable_viscous_metric', False)
     num_walks = FLAGS.agent.get('num_walks', 10)
@@ -58,7 +60,7 @@ def main(_):
         fk_key += f'viscous_{use_viscous_metric}_nwalks_{num_walks}_nuscale_{viscous_scale}_'
         setting = 'verbose_' + setting
 
-    setup_wandb(project='goal_representation', group=FLAGS.run_group, name=setting + '_' + fk_key + FLAGS.env_name + '_' + exp_name)
+    setup_wandb(project='long-horizon-results-replication', group=FLAGS.run_group, name=setting + '_' + fk_key + FLAGS.env_name + '_' + exp_name)
 
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)
