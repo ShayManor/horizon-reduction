@@ -40,7 +40,7 @@ python -c "import ogbench; ogbench.make_env_and_datasets('pointmaze-large-naviga
 
 python main.py \
   --run_group=geo_pointmazelarge_std \
-  --seed=1 \
+  --seed=${SEED:-1} \
   --env_name=pointmaze-large-navigate-v0 \
   --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=mean \

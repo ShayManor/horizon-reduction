@@ -34,7 +34,7 @@ apply_resume_args() {
       latest_dir="${d%/}"
       break
     fi
-  done < <(ls -1dt "$search_dir"/sd*/ 2>/dev/null || true)
+  done < <(ls -1dt "$search_dir"/sd$(printf '%03d' "${SEED:-1}")*/ 2>/dev/null || true)
 
   if [ -z "$latest_dir" ]; then
     echo "=== RESUME=true but no checkpoints found under $search_dir; running fresh ==="

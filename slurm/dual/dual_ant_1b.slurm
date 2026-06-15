@@ -32,7 +32,7 @@ cd "$HR_DIR"
 # Method (b): SHARSA + dual goal paper loss on antmaze-medium 1b.
 python main.py \
   --run_group=dual_ant_1b \
-  --seed=1 \
+  --seed=${SEED:-1} \
   --env_name=antmaze-medium-navigate-v0 \
   --dataset_dir="$BASE/antmaze-medium-navigate-1b-v0" \
   --dataset_replace_interval=1000 \

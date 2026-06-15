@@ -32,7 +32,7 @@ cd "$HR_DIR"
 # Method (d): SHARSA + geodesic HJB on antmaze-medium 1b.
 python main.py \
   --run_group=geo_ant_1b \
-  --seed=1 \
+  --seed=${SEED:-1} \
   --env_name=antmaze-medium-navigate-v0 \
   --dataset_dir="$BASE/antmaze-medium-navigate-1b-v0" \
   --dataset_replace_interval=1000 \

@@ -35,7 +35,7 @@ apply_resume_args "dual_humanoidgiant_1b"
 
 python main.py \
   --run_group=dual_humanoidgiant_1b \
-  --seed=1 \
+  --seed=${SEED:-1} \
   --env_name=humanoidmaze-giant-navigate-oraclerep-v0 \
   --dataset_dir="$BASE/humanoidmaze-giant-navigate-1b-v0" \
   --dataset_replace_interval=4000 \

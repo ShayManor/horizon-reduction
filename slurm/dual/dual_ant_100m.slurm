@@ -33,7 +33,7 @@ cd "$HR_DIR"
 # goals projected through rep_value(g). No phys/FK.
 python main.py \
   --run_group=dual_ant_100m \
-  --seed=1 \
+  --seed=${SEED:-1} \
   --env_name=antmaze-medium-navigate-v0 \
   --dataset_dir="$BASE/antmaze-medium-navigate-100m-v0" \
   --dataset_replace_interval=1000 \

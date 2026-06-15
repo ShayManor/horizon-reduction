@@ -32,7 +32,7 @@ cd "$HR_DIR"
 # Method (c): SHARSA + phys (FK fixed-point form, paper P1). w_fk=1.0; phy_w=0 (default).
 python main.py \
   --run_group=phys_ant_100m \
-  --seed=1 \
+  --seed=${SEED:-1} \
   --env_name=antmaze-medium-navigate-v0 \
   --dataset_dir="$BASE/antmaze-medium-navigate-100m-v0" \
   --dataset_replace_interval=1000 \

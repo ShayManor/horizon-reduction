@@ -32,7 +32,7 @@ cd "$HR_DIR"
 # Method (a): baseline SHARSA. phy_w=0, w_fk=0 (defaults).
 python main.py \
   --run_group=sharsa_ant_100m \
-  --seed=1 \
+  --seed=${SEED:-1} \
   --env_name=antmaze-medium-navigate-v0 \
   --dataset_dir="$BASE/antmaze-medium-navigate-100m-v0" \
   --dataset_replace_interval=1000 \
