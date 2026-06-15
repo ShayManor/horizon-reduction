@@ -46,7 +46,7 @@ latest_run() {
       printf '%s\n' "$d"
       return 0
     fi
-  done < <(ls -1dt "exp/horizon-reduction/$group"/sd*/ 2>/dev/null || true)
+  done < <(ls -1dt "$HR_EXP_DIR/goal_representation/$group"/sd*/ 2>/dev/null || true)
   return 0
 }
 

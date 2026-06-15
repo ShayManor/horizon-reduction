@@ -32,19 +32,19 @@ cd "$HR_DIR"
 source "$HR_DIR/slurm/_resume.sh"
 
 # Method (d): SHARSA + geodesic HJB on pointmaze-large 1b.
-apply_resume_args "geo_pointmazelarge_1b"
+apply_resume_args "geo_pointmazelarge_std"
+
+# Materialize the standard OGBench dataset into the cache before training (no-op
+# if cached). Matches the sharsa pointmaze config (standard OGBench dataset).
+python -c "import ogbench; ogbench.make_env_and_datasets('pointmaze-large-navigate-v0', compact_dataset=True)"
 
 python main.py \
-  --run_group=geo_pointmazelarge_1b \
+  --run_group=geo_pointmazelarge_std \
   --seed=1 \
   --env_name=pointmaze-large-navigate-v0 \
-  --dataset_dir="$BASE/pointmaze-large-navigate-1b-v0" \
-  --dataset_replace_interval=1000 \
   --agent=agents/sharsa_geodesic.py \
   --agent.q_agg=mean \
-  --agent.subgoal_steps=25 \
-  --agent.value_hidden_dims='(256,256,256)' \
-  --agent.actor_hidden_dims='(256,256,256)' \
+  --agent.subgoal_steps=50 \
   --agent.actor_p_trajgoal=1.0 \
   --agent.actor_p_randomgoal=0.0 \
   --agent.actor_geom_sample=False \
@@ -52,7 +52,7 @@ python main.py \
   --agent.w_geo=1.0 \
   --agent.tightness_threshold=0.1 \
   --agent.metric_rank=8 \
-  --offline_steps=5000000 \
+  --offline_steps=1000000 \
   --eval_interval=50000 \
   --save_interval=500000 \
   --log_interval=50000 \
