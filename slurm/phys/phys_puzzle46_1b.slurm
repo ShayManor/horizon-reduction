@@ -17,6 +17,7 @@ export BASE=/scratch/gautschi/manors/ogbench
 export HR_EXP_DIR=/scratch/gautschi/manors/exp
 export WANDB_DIR=/scratch/gautschi/manors/wandb
 export WANDB_CACHE_DIR=/scratch/gautschi/manors/wandb-cache
+export JAX_COMPILATION_CACHE_DIR=/scratch/gautschi/manors/xla-cache
 export HR_DIR=$HOME/horizon-reduction
 export PYTHONPATH="$HR_DIR:${PYTHONPATH:-}"
 export MUJOCO_GL=egl
@@ -25,7 +26,7 @@ unset DISPLAY
 unset JAX_PLATFORMS
 unset JAX_PLATFORM_NAME
 
-mkdir -p /scratch/gautschi/manors/logs "$HR_EXP_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR"
+mkdir -p /scratch/gautschi/manors/logs "$HR_EXP_DIR" "$WANDB_DIR" "$WANDB_CACHE_DIR" "$JAX_COMPILATION_CACHE_DIR"
 cd "$HR_DIR"
 
 source "$HR_DIR/slurm/_resume.sh"
@@ -33,6 +34,7 @@ source "$HR_DIR/slurm/_resume.sh"
 # Method (c): SHARSA + phys (FK fixed-point) on puzzle-4x6 1b.
 # Base = paper puzzle hyperparams (n=25, q_agg=min, actor (0,0.5,0,0.5)); the
 # stochastic Feynman-Kac viscous regularizer is gated on via w_fk.
+# part 1: train fresh to 3M; phys_puzzle46_1b_p2.slurm resumes to 5M (12h smallgpu cap).
 apply_resume_args "phys_puzzle46_1b"
 
 python main.py \
@@ -50,7 +52,7 @@ python main.py \
   --agent.w_fk=1.0 \
   --agent.viscous_scale=0.01 \
   --agent.num_walks=10 \
-  --offline_steps=5000000 \
+  --offline_steps=3000000 \
   --eval_interval=250000 \
   --save_interval=500000 \
   --log_interval=50000 \
