@@ -10,7 +10,9 @@
 #SBATCH --output=slurm-logs/slurm-%j-%x.out
 #SBATCH --mail-type=END,FAIL,TIME_LIMIT
 #SBATCH --mail-user=kumar556@purdue.edu
-#SBATCH --time=25:00:00
+#SBATCH --time=24:00:00
+
+SEED=$1
 
 # --------- setup ---------
 ml gcc/11.5.0
@@ -31,19 +33,18 @@ cd /scratch/gilbreth/kumar556/horizon-reduction
 
 echo "Starting FK-SHARSA Eval script..."
 python main.py \
-  --run_group=puzzle_experiments \
+  --run_group=puzzle_experiments_4seed_sharsa_fk \
   --env_name=puzzle-4x5-play-oraclerep-v0 \
   --dataset_dir=data/puzzle-4x5-play-100m-v0 \
   --dataset_replace_interval=1000 \
   --enable_fk_regularization=True \
+  --seed=$SEED \
   --agent=agents/sharsa.py \
   --agent.q_agg=min \
   --agent.subgoal_steps=25 \
   --agent.actor_p_trajgoal=0.5 \
   --agent.actor_p_randomgoal=0.5 \
   --agent.actor_geom_sample=True \
-  --agent.phy_w=1.0 \
-  --agent.phy_q_mode=constant \
-  --agent.phy_kappa=0.01 \
-  --agent.phy_nu=0.1 \
-  --agent.phy_dt=1.0
+  --agent.w_fk=1.0 \
+  --agent.viscous_scale=0.01 \
+  --agent.num_walks=10 \ 
