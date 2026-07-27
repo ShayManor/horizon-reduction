@@ -34,19 +34,26 @@ mkdir -p "$OUT_DIR"
 echo "=== Output dir: $OUT_DIR ==="
 
 GOAL_IDX=42
+# Goal in the top-right free cell of the giant maze (map cell i=10, j=14), i.e.
+# the same corner as the reference goal-conditioned value figure.
+GOAL_XY="52,36"
+# Ring the same patch in every panel so the four methods are directly comparable:
+# the mid-right region where baseline SHARSA's auto-detected false attractor sits.
+HIGHLIGHT_XY="43.1,10.5"
+# humanoidmaze-giant: pin the value slice to the 3.5M-step checkpoint. Each
+# run_group holds fragmented resume dirs (some skip early epochs); vis.py selects
+# the most complete run that actually saved params_3500000.pkl.
+RESTORE_EPOCH=3500000
 
 # Resolve the most recent training run directory under a run_group (by mtime),
 # considering only runs that have at least one params_*.pkl checkpoint saved.
 latest_run() {
   local group="$1"
-  local d
-  while IFS= read -r d; do
-    [ -z "$d" ] && continue
-    if compgen -G "${d}params_*.pkl" > /dev/null; then
-      printf '%s\n' "$d"
-      return 0
-    fi
-  done < <(ls -1dt "exp/horizon-reduction/$group"/sd*/ 2>/dev/null || true)
+  # Return a glob over seed-1 runs; vis.py selects the highest checkpoint epoch (5M).
+  local pat="$HR_EXP_DIR/goal_representation/$group/sd001_*"
+  if compgen -G "$pat" > /dev/null; then
+    printf '%s\n' "$pat"
+  fi
   return 0
 }
 
@@ -73,7 +80,9 @@ run_vis() {
        --env_name="$env_name" \
        --dataset_dir="$dataset_dir" \
        --grid_size=100 \
-       --goal_idx=$GOAL_IDX \
+       --goal_xy="$GOAL_XY" \
+       --highlight_xy="$HIGHLIGHT_XY" \
+       --restore_epoch=$RESTORE_EPOCH \
        --save_dir="$OUT_DIR/" \
        --title="$title" \
        --restore_path="$path"; then
@@ -89,7 +98,7 @@ run_vis() {
 # The four methods on humanoidmaze-giant 1b.
 # Spec format: env_name:dataset_dir:env_tag:group_suffix
 ENVS=(
-  "humanoidmaze-giant-navigate-v0:$BASE/humanoidmaze-giant-navigate-1b-v0:humgiant:humanoidgiant_1b"
+  "humanoidmaze-giant-navigate-oraclerep-v0:$BASE/humanoidmaze-giant-navigate-1b-v0:humgiant:humanoidgiant_1b"
 )
 
 for spec in "${ENVS[@]}"; do
@@ -133,6 +142,14 @@ for spec in "${ENVS[@]}"; do
     --agent.w_geo=1.0 \
     --agent.tightness_threshold=0.1 \
     --agent.metric_rank=8
+
+  # Composite: stitch the four methods into a 2x2 grid.
+  echo "=== Building composite for [$ENV_TAG] ==="
+  python montage.py \
+    --plot_dir="$OUT_DIR" \
+    --tag="$ENV_TAG" \
+    --goal_idx=$GOAL_IDX \
+    --out="$OUT_DIR/montage_${ENV_TAG}.png" || echo "montage failed for $ENV_TAG"
 done
 
 echo "=== Visualization summary ==="
@@ -141,6 +158,10 @@ echo "Failed:    ${FAILED_LABELS[*]:-(none)}"
 ls -la "$OUT_DIR"/*.png 2>/dev/null || echo "(no plots produced)"
 
 # Commit and push whatever plots did get produced. Always run, even if some methods failed.
+# VIS_PUSH=0 renders only and leaves the plots uncommitted (fetch them with scp).
+if [ "${VIS_PUSH:-1}" = "0" ]; then
+  echo "=== VIS_PUSH=0: skipping git commit/push ==="
+else
 echo "=== Committing plots to git ==="
 cd "$HR_DIR"
 shopt -s nullglob
@@ -169,6 +190,7 @@ else
   fi
 fi
 
+fi
 # Exit non-zero if any method failed, but only AFTER the push has run.
 if [ ${#FAILED_LABELS[@]} -gt 0 ]; then
   echo "=== Some methods failed: ${FAILED_LABELS[*]} ==="

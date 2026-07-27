@@ -39,14 +39,11 @@ GOAL_IDX=42
 # considering only runs that have at least one params_*.pkl checkpoint saved.
 latest_run() {
   local group="$1"
-  local d
-  while IFS= read -r d; do
-    [ -z "$d" ] && continue
-    if compgen -G "${d}params_*.pkl" > /dev/null; then
-      printf '%s\n' "$d"
-      return 0
-    fi
-  done < <(ls -1dt "$HR_EXP_DIR/goal_representation/$group"/sd*/ 2>/dev/null || true)
+  # Return a glob over seed-1 runs; vis.py selects the highest checkpoint epoch (5M).
+  local pat="$HR_EXP_DIR/goal_representation/$group/sd001_*"
+  if compgen -G "$pat" > /dev/null; then
+    printf '%s\n' "$pat"
+  fi
   return 0
 }
 
