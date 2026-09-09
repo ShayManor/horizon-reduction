@@ -6,6 +6,7 @@ per (method, task); the 2-D grid is assembled afterwards.
 """
 
 import glob
+import json
 import os
 import random
 from pathlib import Path
@@ -37,7 +38,16 @@ flags.DEFINE_string('restore_path', None, 'Restore path.')
 flags.DEFINE_integer('restore_epoch', None, 'Restore epoch (None = auto-detect latest).')
 flags.DEFINE_string('title', None, 'Filename prefix (default: agent_name from config).')
 flags.DEFINE_string('tasks', None, 'Comma-separated task ids (default: every task).')
+flags.DEFINE_string('episode_seeds', None,
+                    'Comma-separated env reset seeds; one panel per (task, seed). '
+                    'Same seed gives the same initial state across methods.')
+flags.DEFINE_bool('search', False, 'Report success per (task, seed) and skip rendering.')
 flags.DEFINE_integer('num_rollouts', 1, 'Rollouts overlaid on one panel.')
+flags.DEFINE_string('budget_json', None,
+                    'Reference trace lengths keyed by panel tag. Read by default: trace '
+                    'points past the budget are drawn red instead of green.')
+flags.DEFINE_bool('write_budget', False,
+                  'Record this run own trace lengths into --budget_json instead of reading it.')
 flags.DEFINE_string('ee_body', 'ur5e/robotiq/base', 'Body whose path is traced.')
 flags.DEFINE_float('ee_offset', 0.1, 'Offset along the body z-axis, in meters.')
 flags.DEFINE_float('min_step', 0.005, 'Minimum movement before a point is kept.')
@@ -63,22 +73,26 @@ flags.DEFINE_integer('video_frame_skip', 3, '')
 config_flags.DEFINE_config_file('agent', 'agents/sharsa.py', lock_config=False)
 
 TRAJ_RGBA = np.array([0.0, 1.0, 0.0, 1.0], dtype=np.float32)
+OVER_RGBA = np.array([1.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
 
 # ──────────────────────────────────────────────
 # Rollout + overlay
 # ──────────────────────────────────────────────
-def rollout(env, actor_fn, data, ee_id, task_id):
-    """Run one episode, returning the end-effector path and the final info dict."""
-    observation, info = env.reset(options=dict(task_id=task_id, render_goal=False))
+def rollout(env, actor_fn, data, ee_id, task_id, episode_seed=None):
+    """Run one episode, returning the end-effector path, step count and final info."""
+    observation, info = env.reset(seed=episode_seed,
+                                  options=dict(task_id=task_id, render_goal=False))
     goal = info.get('goal')
     ee_traj = []
+    steps = 0
     done = False
     while not done:
         action = np.array(actor_fn(observations=observation, goals=goal, temperature=0))
         action = np.clip(action, -1, 1)
         observation, _, terminated, truncated, info = env.step(action)
         done = terminated or truncated
+        steps += 1
 
         # Push the gripper base out along its approach axis so the trace sits at
         # the fingertips rather than inside the wrist.
@@ -87,23 +101,28 @@ def rollout(env, actor_fn, data, ee_id, task_id):
         if not ee_traj or np.linalg.norm(point - ee_traj[-1]) > FLAGS.min_step:
             ee_traj.append(point)
 
-    return ee_traj, info
+    return ee_traj, steps, info
 
 
-def draw_traj(scene, ee_traj):
-    """Push one line geom per trajectory segment into the render scene."""
+def draw_traj(scene, ee_traj, budget=None):
+    """Push one line geom per trajectory segment into the render scene.
+
+    Segments beyond `budget` are red: that is the part of the path the agent was
+    still tracing after the reference method had already solved the task.
+    """
     for i in range(len(ee_traj) - 1):
         if scene.ngeom >= scene.maxgeom:
             print('Scene geom buffer full; trajectory truncated.')
             return
+        rgba = TRAJ_RGBA if budget is None or i < budget else OVER_RGBA
         geom = scene.geoms[scene.ngeom]
         mujoco.mjv_initGeom(
-            geom, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3), np.zeros(3), np.zeros(9), TRAJ_RGBA
+            geom, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3), np.zeros(3), np.zeros(9), rgba
         )
         mujoco.mjv_connector(
             geom, mujoco.mjtGeom.mjGEOM_LINE, FLAGS.line_width, ee_traj[i], ee_traj[i + 1]
         )
-        geom.rgba = TRAJ_RGBA
+        geom.rgba = rgba
         scene.ngeom += 1
 
 
@@ -136,7 +155,6 @@ def vis_trajectories(env, agent, config):
     renderer = mujoco.Renderer(model, height=FLAGS.height, width=FLAGS.width)
 
     ee_id = model.body(FLAGS.ee_body).id
-    actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(FLAGS.seed))
 
     task_infos = env.unwrapped.task_infos
     if FLAGS.tasks:
@@ -148,24 +166,63 @@ def vis_trajectories(env, agent, config):
     save_dir = Path(FLAGS.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+    episode_seeds = ([int(s) for s in FLAGS.episode_seeds.split(',')]
+                     if FLAGS.episode_seeds else [None])
+
+    budgets = {}
+    if FLAGS.budget_json and not FLAGS.write_budget:
+        with open(FLAGS.budget_json) as f:
+            budgets = json.load(f)
+
     for task_id in task_ids:
+      for episode_seed in episode_seeds:
+        # The actor is a flow policy, so it draws fresh noise every step and the
+        # rollout depends on where its key stream sits. Restart the stream per
+        # episode, else a (task, seed) result depends on how many episodes ran
+        # before it and the same case is not reproducible across sweeps.
+        actor_fn = supply_rng(
+            agent.sample_actions,
+            rng=jax.random.PRNGKey(FLAGS.seed if episode_seed is None else episode_seed),
+        )
         trajs = []
+        steps = 0
         for _ in range(FLAGS.num_rollouts):
-            ee_traj, info = rollout(env, actor_fn, data, ee_id, task_id)
+            ee_traj, n_steps, info = rollout(env, actor_fn, data, ee_id, task_id, episode_seed)
             trajs.append(ee_traj)
+            steps += n_steps
+
+        success = int(info.get('success', 0))
+        task_name = task_infos[task_id - 1]['task_name']
+        tag = f'{task_id}' if episode_seed is None else f'{task_id}s{episode_seed}'
+        points = sum(len(t) for t in trajs)
+        if FLAGS.write_budget:
+            budgets[tag] = points
+        # Machine-readable line so a seed sweep can be grepped out of the log.
+        print(f'SEARCH,{title},{task_id},{episode_seed},{success}', flush=True)
+        if FLAGS.search:
+            continue
 
         # The backdrop is the physics state the last rollout ended in.
         camera = make_camera(model, data)
         renderer.update_scene(data) if camera is None else renderer.update_scene(data, camera)
         for ee_traj in trajs:
-            draw_traj(renderer.scene, ee_traj)
+            draw_traj(renderer.scene, ee_traj, budgets.get(tag))
         image = renderer.render()
 
-        success = int(info.get('success', 0))
-        task_name = task_infos[task_id - 1]['task_name']
-        save_path = save_dir / f'{title}_task{task_id}_success{success}.png'
+        save_path = save_dir / f'{title}_task{tag}_success{success}.png'
         imageio.imwrite(save_path, image)
-        print(f'{task_name}: {sum(len(t) for t in trajs)} points, success={success} -> {save_path}')
+        print(f'{task_name}: {steps} steps, {points} points, success={success} -> {save_path}')
+
+    if FLAGS.write_budget:
+        # Merged, so the seeded and unseeded passes can share one budget file.
+        merged = {}
+        if os.path.exists(FLAGS.budget_json):
+            with open(FLAGS.budget_json) as f:
+                merged = json.load(f)
+        merged.update(budgets)
+        with open(FLAGS.budget_json, 'w') as f:
+            json.dump(merged, f, indent=1, sort_keys=True)
+        print(f'Wrote {len(budgets)} budgets to {FLAGS.budget_json}')
 
 
 # ──────────────────────────────────────────────
