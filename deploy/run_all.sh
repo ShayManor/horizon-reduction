@@ -66,8 +66,8 @@ run_arm() {
   local name="$1"; shift
   local agent_file="$1"; shift
   if [ ! -f "$agent_file" ]; then
-    echo "skipping $name: $agent_file is not on this branch"
-    return
+    echo "$name: $agent_file is missing" >&2
+    exit 1
   fi
   echo "=== $name ==="
   nohup python main.py --agent="$agent_file" --run_group="spot_${name}" "${common[@]}" "$@" \
