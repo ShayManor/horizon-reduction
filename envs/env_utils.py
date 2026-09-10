@@ -39,3 +39,16 @@ def make_env_and_datasets(dataset_name, dataset_path, dataset_only=False, cur_en
     else:
         env.reset()
         return env, train_dataset, val_dataset
+
+
+def make_online_env(env_name, **kwargs):
+    """Make an environment for online training, dispatched on the name prefix.
+
+    Separate from `make_env_and_datasets` above, which is OGBench-specific: it returns datasets and
+    calls `env.reset()` before a task is chosen. A robot has neither a dataset nor a free reset.
+    """
+    if env_name.startswith('spot-'):
+        from envs.spot_maze import make_spot_maze_env
+
+        return make_spot_maze_env(env_name, **kwargs)
+    raise ValueError(f'no online environment for {env_name!r}')

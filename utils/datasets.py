@@ -128,6 +128,19 @@ class ReplayBuffer(Dataset):
         """Clear the replay buffer."""
         self.size = self.pointer = 0
 
+    def save(self, path):
+        """Write the filled prefix of the buffer to `path` (npz)."""
+        data = {k: np.asarray(v)[: self.size] for k, v in self._dict.items()}
+        np.savez(path, **data)
+
+    @classmethod
+    def load(cls, path, size):
+        """Restore a buffer of capacity `size` from a file written by `save`."""
+        with np.load(path) as f:
+            init_dataset = {k: f[k] for k in f.files}
+        assert get_size(init_dataset) <= size, 'buffer_size is smaller than the saved buffer'
+        return cls.create_from_initial_dataset(init_dataset, size)
+
 
 @dataclasses.dataclass
 class GCDataset:
@@ -171,6 +184,22 @@ class GCDataset:
         assert np.isclose(
             self.config['actor_p_curgoal'] + self.config['actor_p_trajgoal'] + self.config['actor_p_randomgoal'], 1.0
         )
+
+    def rebuild_boundaries(self):
+        """Recompute trajectory boundaries after transitions were appended.
+
+        `__post_init__` computes them once, which is right for a static dataset and wrong for a
+        replay buffer that grows during online training. Call this at an episode boundary.
+
+        `self.size` is clamped to the last terminal, so the episode currently in progress is
+        excluded: it has no terminal for the `searchsorted` in `sample_goals` to land on. Online
+        callers must therefore draw indices from `self.size` and pass them to `sample`, since
+        `Dataset.get_random_idxs` reports the whole filled buffer.
+        """
+        terminals = np.asarray(self.dataset['terminals'])[: self.dataset.size]
+        (self.terminal_locs,) = np.nonzero(terminals > 0)
+        self.initial_locs = np.concatenate([[0], self.terminal_locs[:-1] + 1])
+        self.size = self.terminal_locs[-1] + 1
 
     def sample(self, batch_size: int, idxs=None, evaluation=False):
         """Sample a batch of transitions with goals.

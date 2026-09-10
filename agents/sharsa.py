@@ -230,7 +230,7 @@ class SHARSAAgent(flax.struct.PyTreeNode):
         # Skipped at trace time when w_fk = 0 to keep the pure baseline cheap.
         if self.config['w_fk'] > 0:
             fk_loss_val, fk_info = stochastic_fk_loss(
-                FKAgentProxy(self), make_fk_batch(batch), grad_params, fk_rng
+                FKAgentProxy(self), make_fk_batch(batch, self.config['fk_speed_source']), grad_params, fk_rng
             )
             for k, v in fk_info.items():
                 info[f'fk/{k}'] = v
@@ -426,6 +426,7 @@ def get_config():
             num_walks=10,
             enable_viscous_metric=True,
             use_metric_only=False,
+            fk_speed_source='constant',  # 'constant' | 'observation' (Spot: measured body speed)
         )
     )
     return config

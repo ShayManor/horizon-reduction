@@ -33,17 +33,26 @@ class FKAgentProxy:
         self.config = agent.config
 
 
-def make_fk_batch(batch):
+def make_fk_batch(batch, speed_source='constant'):
     """Build the small batch dict the FK loss reads.
 
     `speed` defaults to ones — no per-state speed in the dataset yet, so the
     Riemannian speed limit is effectively flat (q_s = kappa).
+
+    `speed_source='observation'` instead reads the measured body speed from
+    observation dims 4:6, which is where the Spot maze env puts (vx, vy). Only
+    valid for that observation layout; every OGBench run uses 'constant'.
     """
     obs = batch['observations']
-    speed = batch.get(
-        'speed',
-        jnp.ones((obs.shape[0],), dtype=obs.dtype),
-    )
+    if speed_source == 'observation':
+        speed = jnp.linalg.norm(obs[:, 4:6], axis=-1)
+    elif speed_source == 'constant':
+        speed = batch.get(
+            'speed',
+            jnp.ones((obs.shape[0],), dtype=obs.dtype),
+        )
+    else:
+        raise ValueError(f"unknown fk_speed_source: {speed_source}")
     return {
         'observations': obs,
         'value_goals': batch['high_value_goals'],

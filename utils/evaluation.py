@@ -63,13 +63,14 @@ def evaluate(
         eval_gaussian: Standard deviation of the Gaussian noise to add to the actions.
 
     Returns:
-        A tuple containing the statistics, trajectories, and rendered videos.
+        A tuple containing the statistics, trajectories, rendered videos, and per-episode records.
     """
     actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(np.random.randint(0, 2**32)))
     trajs = []
     stats = defaultdict(list)
 
     renders = []
+    episodes = []
     for i in trange(num_eval_episodes + num_video_episodes):
         traj = defaultdict(list)
         should_render = i >= num_eval_episodes
@@ -116,10 +117,24 @@ def evaluate(
         if i < num_eval_episodes:
             add_to(stats, flatten(info))
             trajs.append(traj)
+            episodes.append(
+                dict(
+                    success=float(flatten(info).get('success', 0.0)),
+                    steps=step,
+                    terminated=bool(terminated),
+                )
+            )
         else:
             renders.append(np.array(render))
 
-    for k, v in stats.items():
-        stats[k] = np.mean(v)
+    # The Spot env reports waypoint ids and SDK error strings alongside the numeric fields, so
+    # only the numeric ones average. OGBench envs report numbers throughout and are unaffected.
+    stats = {k: np.mean(v) for k, v in stats.items() if np.asarray(v).dtype.kind in 'biufc'}
 
-    return stats, trajs, renders
+    # Steps to completion over completed episodes only: a truncated episode ends at
+    # `max_episode_steps`, which describes the timeout and not the policy. Timeouts are excluded
+    # rather than censored, so a task with no completions has no steps value.
+    completed_steps = [ep['steps'] for ep in episodes if ep['success'] > 0]
+    stats['steps'] = np.mean(completed_steps) if len(completed_steps) > 0 else np.nan
+
+    return stats, trajs, renders, episodes

@@ -275,7 +275,13 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
             sq_dist = scale * jnp.sum(delta ** 2, axis=-1) + jnp.sum(Ut_delta ** 2, axis=-1)
             cost = jnp.sqrt(sq_dist + 1e-8)
         else:
-            cost = delta_norm * self.config['kappa']
+            # `cost_dims` truncates delta to a leading slice of the observation. On the 7-dim SE(2)
+            # observation the full vector sums metres, a dimensionless heading chord and m/s, so the
+            # weighting is an accident of the layout; cost_dims=2 keeps the xy slice. None (default)
+            # is the full vector, which is what every OGBench run used.
+            cost_dims = self.config['cost_dims']
+            cost_delta = delta if cost_dims is None else delta[..., :cost_dims]
+            cost = jnp.linalg.norm(cost_delta, axis=-1) * self.config['kappa']
 
         #  HJB residual: V(w) - V(s) + c. Violation iff < 0. Always computed. 
         hjb_residual = v_w - v_s + cost
@@ -422,7 +428,9 @@ class SHARSAGeodesicAgent(flax.struct.PyTreeNode):
         # Regularizer: either the verbatim FK loss (agents/fk_loss.py) or the
         # legacy geodesic-HJB combo. Selected by config['use_fk_loss'].
         if self.config['use_fk_loss']:
-            geo_loss, fk_info = stochastic_fk_loss(FKAgentProxy(self), make_fk_batch(batch), grad_params, fk_rng)
+            geo_loss, fk_info = stochastic_fk_loss(
+                FKAgentProxy(self), make_fk_batch(batch, self.config['fk_speed_source']), grad_params, fk_rng
+            )
             for k, v in fk_info.items():
                 info[f'fk/{k}'] = v
         else:
@@ -604,6 +612,7 @@ def get_config():
             metric_hidden_dims=(512, 512),
             metric_rank=8,
             kappa=0.01,  # isotropic fallback cost scale
+            cost_dims=ml_collections.config_dict.placeholder(int),  # leading obs dims used by c(s, w)
             tightness_threshold=0.2,
             w_geo=0.5,  # overall weight of geodesic loss
             w_hjb=1.0,
@@ -626,6 +635,7 @@ def get_config():
             num_walks=10,
             enable_viscous_metric=True,
             use_metric_only=False,
+            fk_speed_source='constant',  # 'constant' | 'observation' (Spot: measured body speed)
         )
     )
     return config
