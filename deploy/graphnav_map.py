@@ -6,6 +6,7 @@ The seed frame is the map frame, so waypoint positions read here are directly co
 `bosdyn` is imported lazily so the rest of the repo imports without the SDK installed.
 """
 import heapq
+import json
 import math
 import os
 
@@ -179,3 +180,54 @@ class GraphNavMap:
     def distance(self, start, goal):
         """Graph distance in metres between two waypoints."""
         return graph_distance(self.graph, self.resolve(start), self.resolve(goal))
+
+
+class CachedMap:
+    """Waypoint positions read from `waypoint_xy.json` instead of from the protobuf.
+
+    Same `poses`/`resolve`/`xy` surface as `GraphNavMap`, minus `distance`: graph distance needs
+    the edges, and on this map it overstates true distance by up to 130x anyway because the
+    recorded chain has no loop closures. Pick task pairs by free-space distance on the occupancy
+    grid instead.
+
+    The cache exists because parsing the map needs `bosdyn-api`, which is installed on the machine
+    that talks to the robot and nowhere else. Write it from a machine that has the SDK:
+
+        entries = [dict(id=w.id, name=names[w.id], x=..., y=..., yaw=...) for w in graph.waypoints]
+        json.dump(dict(waypoints=entries), open(f'{map_path}/waypoint_xy.json', 'w'))
+    """
+
+    filename = 'waypoint_xy.json'
+
+    def __init__(self, map_path):
+        self.map_path = map_path
+        with open(os.path.join(map_path, self.filename)) as f:
+            entries = json.load(f)['waypoints']
+
+        self.poses = {e['id']: (e['x'], e['y'], e.get('yaw', 0.0)) for e in entries}
+        self.short_codes = {}
+        for entry in entries:
+            self.short_codes.setdefault(entry['id'][:2], []).append(entry['id'])
+            if entry.get('name'):
+                self.short_codes.setdefault(entry['name'], []).append(entry['id'])
+
+    resolve = GraphNavMap.resolve
+    xy = GraphNavMap.xy
+
+
+def open_map(map_path):
+    """Open a map, preferring the protobuf and falling back to the cached waypoint positions.
+
+    The protobuf is authoritative, so it wins whenever the SDK is importable. Without the SDK the
+    cache is the only thing that can be read, and it is enough for everything except graph
+    distance: the env needs waypoint positions and the task list needs name resolution.
+    """
+    try:
+        return GraphNavMap(map_path)
+    except ImportError:
+        cached = os.path.join(map_path, CachedMap.filename)
+        assert os.path.exists(cached), (
+            f'bosdyn is not installed and {cached} is missing. Write the cache from a machine that '
+            f'has the SDK, or install bosdyn-api to read {map_path}/graph directly.'
+        )
+        return CachedMap(map_path)

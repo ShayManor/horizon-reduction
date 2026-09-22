@@ -142,6 +142,47 @@ class ReplayBuffer(Dataset):
         return cls.create_from_initial_dataset(init_dataset, size)
 
 
+def load_spot_datasets(paths, val_fraction=0.05):
+    """Concatenate replay buffers written by the online run into a train/val pair.
+
+    The on-robot run saves `buffer_{step}.npz` in the schema the agents already consume, so
+    offline training reads a run's saved buffers without touching an agent. Pass one run's
+    checkpoints, several runs' buffers, or both: superseded checkpoints are dropped below.
+    """
+    assert len(paths) > 0, 'no buffer files to load'
+    shards = []
+    for path in paths:
+        with np.load(path) as f:
+            shards.append({k: f[k] for k in f.files})
+    # `ReplayBuffer.save` writes the whole filled prefix, so one run's checkpoints overlap and
+    # concatenating them would count the early transitions several times. A shard that is a
+    # prefix of a longer one is superseded by it; shards from separate runs share no prefix.
+    order = sorted(range(len(shards)), key=lambda i: get_size(shards[i]), reverse=True)
+    kept = []
+    for i in order:
+        n = get_size(shards[i])
+        if any(np.array_equal(shards[i]['observations'], shards[j]['observations'][:n]) for j in kept):
+            continue
+        kept.append(i)
+    shards = [shards[i] for i in sorted(kept)]
+
+    keys = shards[0].keys()
+    data = {k: np.concatenate([shard[k] for shard in shards]) for k in keys}
+
+    # `GCDataset` asserts its last index is a terminal, so the cut has to land on an episode
+    # boundary. Snap the proportional split to the nearest one, excluding the ends so that
+    # neither half comes back empty.
+    (terminal_locs,) = np.nonzero(data['terminals'] > 0)
+    boundaries = terminal_locs[:-1] + 1
+    assert len(boundaries) > 0, 'need at least two complete episodes to hold out a validation set'
+    target = get_size(data) * (1.0 - val_fraction)
+    split = int(boundaries[np.argmin(np.abs(boundaries - target))])
+
+    train = {k: v[:split] for k, v in data.items()}
+    val = {k: v[split:] for k, v in data.items()}
+    return train, val
+
+
 @dataclasses.dataclass
 class GCDataset:
     """Dataset class for goal-conditioned RL.

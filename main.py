@@ -14,7 +14,7 @@ from ml_collections import config_flags
 
 from agents import agents
 from envs.env_utils import make_env_and_datasets, make_online_env
-from utils.datasets import Dataset, GCDataset, HGCDataset, ReplayBuffer
+from utils.datasets import Dataset, GCDataset, HGCDataset, ReplayBuffer, get_size, load_spot_datasets
 from utils.evaluation import evaluate, supply_rng
 from utils.flax_utils import restore_agent, save_agent
 from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
@@ -117,6 +117,22 @@ def episode_metrics(records, num_tasks, window_episodes):
     return metrics
 
 
+def online_step_range(env_step, seeded_steps, online_steps):
+    """The env steps the online loop will take.
+
+    `env_step` indexes the buffer, so a buffer seeded from an offline dataset starts it well past
+    zero. The budget counts online steps, so those seeded transitions are added back: without it an
+    `online_steps` smaller than the offline dataset gives an empty range, and the run trains on
+    nothing and reports no error.
+    """
+    steps = range(env_step + 1, seeded_steps + online_steps + 1)
+    assert len(steps) > 0, (
+        f'online_steps={online_steps} is already spent at env_step={env_step}. It counts steps '
+        f'taken online, and {seeded_steps} of the buffer was seeded from the offline dataset.'
+    )
+    return steps
+
+
 def train_online(config):
     """Train on the robot: step it, fill the buffer, update, repeat.
 
@@ -139,6 +155,7 @@ def train_online(config):
         goal_tol=FLAGS.goal_tol,
         vel_limits=tuple(float(v) for v in FLAGS.vel_limits),
         reverse_limit=FLAGS.reverse_limit,
+        seed=FLAGS.seed,
     )
     tasks = env.task_infos
     num_tasks = len(tasks)
@@ -150,6 +167,7 @@ def train_online(config):
     episode_records = []
     episode_idx = 0
     env_step = 0
+    seeded_steps = 0  # offline transitions, which do not count against the online step budget
 
     def log_episode(task_idx, steps, terminated, truncated, success, start_step):
         nonlocal episode_idx
@@ -181,14 +199,32 @@ def train_online(config):
     if FLAGS.restore_path is not None:
         candidates = glob.glob(FLAGS.restore_path)
         assert len(candidates) == 1, f'Found {len(candidates)} candidates: {candidates}'
-        buffer = ReplayBuffer.load(
-            os.path.join(candidates[0], f'buffer_{FLAGS.restore_epoch}.npz'), FLAGS.buffer_size
-        )
+        buffer_path = os.path.join(candidates[0], f'buffer_{FLAGS.restore_epoch}.npz')
+        if os.path.exists(buffer_path):
+            buffer = ReplayBuffer.load(buffer_path, FLAGS.buffer_size)
+            print(f'Restored {buffer.size} transitions from {candidates[0]}')
+        else:
+            # Offline-to-online. The offline path saves weights and no buffer, so the warm start
+            # seeds the buffer with the dataset those weights were trained on. Starting online from
+            # an empty buffer would have the restored weights learn from the first few episodes
+            # alone, and the first thing online updates would do is unlearn the offline stage.
+            assert FLAGS.dataset_dir is not None, (
+                f'{buffer_path} does not exist, so this is a warm start from an offline run. '
+                'Pass --dataset_dir so the buffer starts from the offline dataset.'
+            )
+            paths = [f for f in sorted(glob.glob(f'{FLAGS.dataset_dir}/*.npz')) if '-val.npz' not in f]
+            offline_data, _ = load_spot_datasets(paths)
+            assert get_size(offline_data) < FLAGS.buffer_size, (
+                f'buffer_size={FLAGS.buffer_size} does not leave room for {get_size(offline_data)} '
+                'offline transitions plus the online ones. Raise it.'
+            )
+            buffer = ReplayBuffer.create_from_initial_dataset(offline_data, FLAGS.buffer_size)
+            seeded_steps = buffer.size
+            print(f'Seeded {buffer.size} offline transitions from {FLAGS.dataset_dir}')
         env_step = buffer.size
         # A crash lands mid-episode. The run stopped at that index, so it is a real trajectory
         # boundary; marking it keeps the partial episode instead of discarding its transitions.
         buffer['terminals'][buffer.size - 1] = 1.0
-        print(f'Restored {buffer.size} transitions from {candidates[0]}')
     else:
         # `ReplayBuffer.create` reads only shape and dtype off the example, so this costs no robot
         # time and the first reset below is the first real one.
@@ -244,7 +280,7 @@ def train_online(config):
     goal = info['goal']
     start_step, ep_steps = env_step, 0
 
-    remaining = range(env_step + 1, FLAGS.online_steps + 1)
+    remaining = online_step_range(env_step, seeded_steps, FLAGS.online_steps)
     try:
         for env_step in tqdm.tqdm(remaining, smoothing=0.1, dynamic_ncols=True):
             # The acting policy is the agent's own sampling. SHARSA's flow actor ignores
@@ -329,7 +365,16 @@ def main(_):
     if FLAGS.num_datasets is not None:
         datasets = datasets[: FLAGS.num_datasets]
     dataset_idx = 0
-    env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, dataset_path=datasets[dataset_idx])
+    is_spot = FLAGS.env_name.startswith('spot-')
+    if is_spot:
+        # A whole on-robot run fits in memory, so the buffers are concatenated once here and the
+        # replacement path below is skipped. Evaluating means driving the robot, which the offline
+        # loop has no env for: run `--online_steps` against the trained checkpoint instead.
+        assert FLAGS.eval_interval == 0, 'offline Spot training has no env to evaluate in; pass --eval_interval=0'
+        env = None
+        train_dataset, val_dataset = load_spot_datasets(datasets)
+    else:
+        env, train_dataset, val_dataset = make_env_and_datasets(FLAGS.env_name, dataset_path=datasets[dataset_idx])
 
     # Initialize agent.
     random.seed(FLAGS.seed)
@@ -422,7 +467,12 @@ def main(_):
         if i % FLAGS.save_interval == 0:
             save_agent(agent, FLAGS.save_dir, i)
 
-        if FLAGS.dataset_replace_interval != 0 and i % FLAGS.dataset_replace_interval == 0 and len(datasets) > 1:
+        if (
+            not is_spot
+            and FLAGS.dataset_replace_interval != 0
+            and i % FLAGS.dataset_replace_interval == 0
+            and len(datasets) > 1
+        ):
             dataset_idx = (dataset_idx + 1) % len(datasets)
             train_dataset, val_dataset = make_env_and_datasets(
                 FLAGS.env_name, dataset_path=datasets[dataset_idx], dataset_only=True, cur_env=env

@@ -30,6 +30,12 @@ OBS_DIM = 7
 ACTION_DIM = 3
 GOAL_DIM = 2
 
+SIM_HOSTNAME = 'sim'  # --robot_hostname=sim runs against the occupancy grid instead of the robot
+
+
+def _no_sleep(seconds):
+    """Control-period wait for the stand-in: there is no robot to stay in step with."""
+
 
 class SpotMazeEnv(gymnasium.Env):
     """Spot navigating between GraphNav waypoint pairs.
@@ -219,24 +225,46 @@ def make_spot_maze_env(
     goal_tol=0.5,
     vel_limits=(0.6, 0.4, 0.8),
     reverse_limit=None,
+    seed=0,
 ):
-    """Connect to Spot, upload the map, and build the env. `env_name` is accepted for symmetry."""
-    from deploy.graphnav_map import GraphNavMap
-    from deploy.spot_client import SpotClient
+    """Connect to Spot, upload the map, and build the env. `env_name` is accepted for symmetry.
 
-    client = SpotClient(
-        robot_hostname,
-        control_hz=control_hz,
-        vel_limits=vel_limits,
-        reverse_limit=reverse_limit,
-    )
-    client.connect()
-    client.upload_graph(graphnav_map_path)
-    client.acquire()
+    `robot_hostname=SIM_HOSTNAME` swaps the SDK client for the occupancy-grid stand-in and drops
+    the real-time wait, so the loop runs as fast as the updates allow. The robot is what the
+    reported numbers come from; the stand-in is for checking the plumbing and the warm start.
+    """
+    from deploy.graphnav_map import open_map
 
-    graphnav_map = GraphNavMap(graphnav_map_path)
+    graphnav_map = open_map(graphnav_map_path)
     tasks = load_tasks(graphnav_map_path, graphnav_map, task_ids)
     waypoint_xy = {wp_id: (pose[0], pose[1]) for wp_id, pose in graphnav_map.poses.items()}
+
+    if robot_hostname == SIM_HOSTNAME:
+        from deploy.sim_client import SimSpotClient
+
+        client = SimSpotClient(
+            os.path.join(graphnav_map_path, 'occupancy.npz'),
+            waypoint_xy,
+            goal_tol=goal_tol,
+            seed=seed,
+            control_hz=control_hz,
+            vel_limits=vel_limits,
+            reverse_limit=reverse_limit,
+        )
+        sleep_fn = _no_sleep
+    else:
+        from deploy.spot_client import SpotClient
+
+        client = SpotClient(
+            robot_hostname,
+            control_hz=control_hz,
+            vel_limits=vel_limits,
+            reverse_limit=reverse_limit,
+        )
+        client.connect()
+        client.upload_graph(graphnav_map_path)
+        client.acquire()
+        sleep_fn = time.sleep
 
     return SpotMazeEnv(
         client,
@@ -245,4 +273,5 @@ def make_spot_maze_env(
         control_hz=control_hz,
         max_episode_steps=max_episode_steps,
         goal_tol=goal_tol,
+        sleep_fn=sleep_fn,
     )

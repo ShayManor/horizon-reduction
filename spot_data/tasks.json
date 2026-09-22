@@ -1,0 +1,27 @@
+[
+  {
+    "task_name": "task1",
+    "start": "waypoint_15",
+    "goal": "waypoint_9"
+  },
+  {
+    "task_name": "task2",
+    "start": "waypoint_27",
+    "goal": "waypoint_17"
+  },
+  {
+    "task_name": "task3",
+    "start": "waypoint_26",
+    "goal": "waypoint_16"
+  },
+  {
+    "task_name": "task4",
+    "start": "waypoint_19",
+    "goal": "waypoint_14"
+  },
+  {
+    "task_name": "task5",
+    "start": "waypoint_25",
+    "goal": "waypoint_18"
+  }
+]

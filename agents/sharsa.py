@@ -422,6 +422,7 @@ def get_config():
             # Stochastic Feynman-Kac viscous regularization (agents/fk_loss.py).
             # w_fk=0 leaves it inert (matches upstream baseline behavior).
             w_fk=0.0,
+            fk_kappa=0.1,  # FK slope cap. Rescale with V: ~15 under squared+gc_negative, 0.1 under bce.
             viscous_scale=0.01,
             num_walks=10,
             enable_viscous_metric=True,

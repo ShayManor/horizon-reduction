@@ -1,0 +1,200 @@
+{
+  "waypoints": [
+    {
+      "id": "curled-hare-p2AHD3I8WMsN4tzZ.Ja08A==",
+      "name": "waypoint_0",
+      "x": 1.770234019690745,
+      "y": 0.08500385409787858,
+      "yaw": -3.088590268663055
+    },
+    {
+      "id": "sneezy-moose-PeLsweisxnjiO94NC1YeTg==",
+      "name": "waypoint_1",
+      "x": 1.684643730862592,
+      "y": 0.22934564695037768,
+      "yaw": 1.7438968080123463
+    },
+    {
+      "id": "goodly-mako-UOYjDJu.msmCpRpnDSZ0bg==",
+      "name": "waypoint_2",
+      "x": 1.9203575249678762,
+      "y": 2.2484838664084634,
+      "yaw": 1.5323647866443002
+    },
+    {
+      "id": "pursy-cuckoo-KY50eTwdWQRGjiQ8QO+rag==",
+      "name": "waypoint_3",
+      "x": 1.8240579624665854,
+      "y": 2.975157945465466,
+      "yaw": 2.1064900208630672
+    },
+    {
+      "id": "waxing-lizard-NU2.xix.QkmxGvS6fLaNLw==",
+      "name": "waypoint_4",
+      "x": 1.559165575192237,
+      "y": 3.1648720734740583,
+      "yaw": 2.8157317465859597
+    },
+    {
+      "id": "abuzz-yak-DYiiX9yvZAp38i.bmnAmjA==",
+      "name": "waypoint_5",
+      "x": 1.0486810822165222,
+      "y": 3.1918981077095436,
+      "yaw": 2.239983914306
+    },
+    {
+      "id": "legato-guinea-yI0JIF+bwG3QjxXemximSQ==",
+      "name": "waypoint_6",
+      "x": 0.9534528404779172,
+      "y": 3.6567053644881806,
+      "yaw": 1.659142078151965
+    },
+    {
+      "id": "mulish-mink-P.COps+3wWAZV3Eo5wmKKw==",
+      "name": "waypoint_7",
+      "x": 1.301982233403103,
+      "y": 3.7626625625585013,
+      "yaw": 0.05826002574635049
+    },
+    {
+      "id": "mock-fowl-qVjS7uxZgtEqSvquKX3l4Q==",
+      "name": "waypoint_8",
+      "x": 2.4872632216311006,
+      "y": 3.8408617739531024,
+      "yaw": -0.49217530111294344
+    },
+    {
+      "id": "grungy-setter-5n.Ols5Ogg6H3Q4wLigk4Q==",
+      "name": "waypoint_9",
+      "x": 2.5240019214799365,
+      "y": 3.4852751607446093,
+      "yaw": -1.614522369393243
+    },
+    {
+      "id": "beaten-simian-3CoE3VHC18Yki1PiEMnxFQ==",
+      "name": "waypoint_10",
+      "x": 2.578505039316253,
+      "y": 1.615709524852501,
+      "yaw": -1.0759103789028484
+    },
+    {
+      "id": "untidy-beagle-GowChTY1MDq3MCVgiPyT9w==",
+      "name": "waypoint_11",
+      "x": 2.8226842046093616,
+      "y": 1.2952702851189022,
+      "yaw": -0.545730148229383
+    },
+    {
+      "id": "vast-pug-VWkUJNzjHY30Xt21Te9V1g==",
+      "name": "waypoint_12",
+      "x": 4.824224999427848,
+      "y": 1.0341321530901053,
+      "yaw": -0.053003914126522805
+    },
+    {
+      "id": "briny-worm-6d7sPOciBHG53SmlVuJyfQ==",
+      "name": "waypoint_13",
+      "x": 5.250686221614934,
+      "y": 0.9612921249394266,
+      "yaw": 0.3589706820706333
+    },
+    {
+      "id": "swept-cur-er36Z1wNi7tgLQqgXPHfrg==",
+      "name": "waypoint_14",
+      "x": 5.495059212773011,
+      "y": 1.2076579252932151,
+      "yaw": 0.9567007407936092
+    },
+    {
+      "id": "aired-bovid-pdrNZ66GOBjWxCfRhJGc.w==",
+      "name": "waypoint_15",
+      "x": 5.9450635804828105,
+      "y": 3.002444397752653,
+      "yaw": 1.496723012114759
+    },
+    {
+      "id": "satiny-platypus-A2EKg8vnfTT7v0lVYNa0wA==",
+      "name": "waypoint_16",
+      "x": 5.7667015791967895,
+      "y": 4.90886523351152,
+      "yaw": 2.0209608569166204
+    },
+    {
+      "id": "permed-boa-A6VvD0mIKr+B18TgpoSrmQ==",
+      "name": "waypoint_17",
+      "x": 5.273894865164957,
+      "y": 5.705182137388732,
+      "yaw": 2.586107766699619
+    },
+    {
+      "id": "sparse-tick-XDDKow0GCtTdXExcdFCCYA==",
+      "name": "waypoint_18",
+      "x": 4.637567310648498,
+      "y": 5.648373423372589,
+      "yaw": 3.1141457893306943
+    },
+    {
+      "id": "melted-puffin-p27P7zkXo5Gs.6uIMbkmPQ==",
+      "name": "waypoint_19",
+      "x": 2.7117793478545833,
+      "y": 5.499682304414045,
+      "yaw": -2.5377971176610954
+    },
+    {
+      "id": "molar-shrimp-n3wd89MyMUrmx965akmI8Q==",
+      "name": "waypoint_20",
+      "x": 2.5102612878698314,
+      "y": 5.176239021278203,
+      "yaw": -1.9601546441930204
+    },
+    {
+      "id": "rainy-vervet-aP6z4FBPkhq+bZ5Ucag+8w==",
+      "name": "waypoint_21",
+      "x": 2.4420878793671297,
+      "y": 4.546289998588302,
+      "yaw": -2.7093924447206943
+    },
+    {
+      "id": "urban-deer-AMSOmS5tm237m5X+mbUTzA==",
+      "name": "waypoint_22",
+      "x": 1.4179494406730888,
+      "y": 4.08567088613458,
+      "yaw": 2.9975002986804897
+    },
+    {
+      "id": "argent-lynx-3vMpe0VOOpLgwHHaTSsvHQ==",
+      "name": "waypoint_23",
+      "x": 1.1937307741770016,
+      "y": 3.8558819370299484,
+      "yaw": -1.4708637507711477
+    },
+    {
+      "id": "germy-coyote-PWN61bXwFkM9DxFPQ.KnYg==",
+      "name": "waypoint_24",
+      "x": 1.8518770506080848,
+      "y": 1.8843173497803511,
+      "yaw": -1.2200532149541397
+    },
+    {
+      "id": "fancy-doe-H4bCM6Bqs03mn4iHsABY3w==",
+      "name": "waypoint_25",
+      "x": 2.064029323216993,
+      "y": 0.8501132536716214,
+      "yaw": -1.7792734607667071
+    },
+    {
+      "id": "planar-kiwi-63EwCoy9k8ia53jKoBxVXA==",
+      "name": "waypoint_26",
+      "x": 1.8431953670147432,
+      "y": 0.3766126188047262,
+      "yaw": -2.3546135835819473
+    },
+    {
+      "id": "bypast-puffin-v4b8gruUvEYVReTsmrc9Sw==",
+      "name": "waypoint_27",
+      "x": 1.587379500006555,
+      "y": 0.12177293278396079,
+      "yaw": -2.9186333186956204
+    }
+  ]
+}

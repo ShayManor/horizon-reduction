@@ -57,6 +57,10 @@ common=(
   --save_interval="$SAVE_INTERVAL"
   --log_interval="$LOG_INTERVAL"
   --agent.gc_negative=True
+  # `gc_negative=True` makes the high-level reward -(1-g^k)/(1-g), about -10 at subgoal_steps=10.
+  # The default `bce` value loss needs a target in [0, 1] and is unbounded below outside it, so the
+  # two must change together or the value head collapses to zero.
+  --agent.value_loss_type=squared
 )
 if [ -n "$TASK_IDS" ]; then
   common+=(--task_ids="$TASK_IDS")

@@ -28,7 +28,10 @@ def stochastic_fk_loss(self, batch, grad_params, key):
     lambda_temp = 1.0
     sigma = jnp.sqrt(2.0 * nu)
     K = self.config.get('num_walks', 10)
-    kappa = 0.1
+    # Slope cap, read from config so it can track V's scale: under `value_loss_type='squared'`
+    # with `gc_negative=True`, V is a discounted step count rather than a [0, 1] probability.
+    # The 0.1 default keeps every run that does not set the flag byte-identical.
+    kappa = self.config.get('fk_kappa', 0.1)
 
     # 2. Setup Inputs
     obs = batch['observations']
