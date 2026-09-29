@@ -1,5 +1,4 @@
 import numpy as np
-import ogbench
 
 from utils.datasets import Dataset
 
@@ -16,6 +15,10 @@ def make_env_and_datasets(dataset_name, dataset_path, dataset_only=False, cur_en
     Returns:
         A tuple of the environment (if `dataset_only` is False), training dataset, and validation dataset.
     """
+    # Imported here rather than at module scope: it pulls in MuJoCo and dm_control, which the
+    # Spot path never touches and which are a heavy install on the robot's onboard computer.
+    import ogbench
+
     if dataset_only:
         train_dataset, val_dataset = ogbench.make_env_and_datasets(
             dataset_name, dataset_path=dataset_path, compact_dataset=True, dataset_only=dataset_only, cur_env=cur_env

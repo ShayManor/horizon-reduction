@@ -7,3 +7,5 @@ matplotlib
 moviepy
 wandb
 bosdyn-client
+python -c "import csv,glob; f=glob.glob('/mnt/data/smoke/goal_representation/jetson_smoke/*/steps.csv')[0]; d=sorted(float(r['dt']) for r in list(csv.DictReader(open(f)))[-200:]); print('median dt', d[len(d)//2])"
+  printf 'export WANDB_DIR=/mnt/data/wandb\nexport WANDB_CACHE_DIR=/mnt/data/cache/wandb\nexport TMPDIR=/mnt/data/tmp\nexport PIP_CACHE_DIR=/mnt/data/cache/pip\n' | sudo tee /mnt/data/env.sh > /dev/null && sudo chown horizon:horizon /mnt/data/env.sh
