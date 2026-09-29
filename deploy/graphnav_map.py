@@ -218,13 +218,15 @@ class CachedMap:
 def open_map(map_path):
     """Open a map, preferring the protobuf and falling back to the cached waypoint positions.
 
-    The protobuf is authoritative, so it wins whenever the SDK is importable. Without the SDK the
-    cache is the only thing that can be read, and it is enough for everything except graph
-    distance: the env needs waypoint positions and the task list needs name resolution.
+    The protobuf is authoritative, so it wins whenever the SDK is importable and the map files are
+    present. Falling back covers both a missing SDK and a machine carrying only the cache, and it
+    is enough for everything except graph distance: the env needs waypoint positions and the task
+    list needs name resolution. Uploading the map to a robot still needs the protobuf, and
+    `SpotClient.upload_graph` reports that itself.
     """
     try:
         return GraphNavMap(map_path)
-    except ImportError:
+    except (ImportError, FileNotFoundError):
         cached = os.path.join(map_path, CachedMap.filename)
         assert os.path.exists(cached), (
             f'bosdyn is not installed and {cached} is missing. Write the cache from a machine that '
