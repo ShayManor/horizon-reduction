@@ -59,6 +59,15 @@ def get_flag_dict():
     return flag_dict
 
 
+def _netrc_has_wandb():
+    """Whether ~/.netrc holds a wandb credential. Unreadable or absent counts as no."""
+    try:
+        with open(os.path.expanduser('~/.netrc')) as f:
+            return 'api.wandb.ai' in f.read()
+    except OSError:
+        return False
+
+
 def setup_wandb(
     entity=None,
     project='project',
@@ -67,6 +76,13 @@ def setup_wandb(
     mode='online',
 ):
     """Set up Weights & Biases for logging."""
+    # Without a key, wandb prompts on stdin and writes the answer to ~/.netrc, which fails outright
+    # on a host whose home filesystem is full and hangs a detached run either way. Log offline
+    # instead: the run is still recorded, and `wandb sync` uploads it later.
+    if not os.environ.get('WANDB_API_KEY') and not _netrc_has_wandb():
+        mode = 'offline'
+        print('WANDB_API_KEY is unset and ~/.netrc has no wandb entry; logging offline.')
+
     wandb_output_dir = tempfile.mkdtemp()
     tags = [group] if group is not None else None
 
