@@ -114,19 +114,36 @@ class SpotClient:
         raise RuntimeError(f'e-stop did not clear within {timeout:.0f}s of registering the endpoint')
 
     def acquire(self):
-        """Register the e-stop, take the lease, power on, and stand."""
+        """Take control, register the e-stop, power on, and stand.
+
+        Starts from whatever state the robot was left in: the tablet or a previous run still
+        holding the lease, motors already on, or another client's e-stop configuration in place.
+        A benchmark that runs four methods back to back cannot ask a person to tidy up in between.
+        """
+        from bosdyn.api import robot_state_pb2
         from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
         from bosdyn.client.lease import LeaseClient, LeaseKeepAlive
         from bosdyn.client.robot_command import blocking_stand
+
+        # `take` rather than `acquire`: whoever held the lease last keeps it until someone takes
+        # it, and `acquire` fails outright against a held lease. This is the point where control
+        # passes from the tablet to this process.
+        lease_client = self.robot.ensure_client(LeaseClient.default_service_name)
+        lease_client.take()
+        self._lease_keepalive = LeaseKeepAlive(lease_client, return_at_exit=True)
+
+        # `force_simple_setup` rewrites the e-stop configuration, which the robot refuses while
+        # motors are on, so sit and power down first when it was left standing. Powering down
+        # needs the lease, which is why it comes after taking it.
+        power = self.state_client.get_robot_state().power_state.motor_power_state
+        if power != robot_state_pb2.PowerState.STATE_OFF:
+            self.robot.power_off(cut_immediately=False, timeout_sec=20)
 
         estop_client = self.robot.ensure_client(EstopClient.default_service_name)
         endpoint = EstopEndpoint(client=estop_client, name=self.client_name, estop_timeout=9.0)
         endpoint.force_simple_setup()
         self._estop_keepalive = EstopKeepAlive(endpoint)
         self._wait_for_estop_clear(estop_client)
-
-        lease_client = self.robot.ensure_client(LeaseClient.default_service_name)
-        self._lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True)
 
         self.robot.power_on(timeout_sec=20)
         blocking_stand(self.command_client, timeout_sec=10)
@@ -250,13 +267,35 @@ class SpotClient:
 
     # -- GraphNav -----------------------------------------------------------------------------
 
-    def upload_graph(self, map_path):
-        """Upload a downloaded map and its snapshots, then localize against the nearest fiducial."""
+    def already_localized_to(self, graph):
+        """Whether the robot already holds this graph and knows where it is on it."""
+        try:
+            current = self.graph_nav_client.download_graph()
+        except Exception:  # noqa: BLE001 - any failure here just means "re-upload"
+            return False
+        if current is None:
+            return False
+        if {w.id for w in current.waypoints} != {w.id for w in graph.waypoints}:
+            return False
+        return bool(self.graph_nav_client.get_localization_state().localization.waypoint_id)
+
+    def upload_graph(self, map_path, force=False):
+        """Upload a downloaded map and its snapshots, then localize against the nearest fiducial.
+
+        Skipped when the robot already holds this graph and is localized on it. `clear_graph`
+        throws the localization away, and recovering it needs another fiducial sighting, which the
+        robot cannot give from wherever the previous run happened to park it. Re-running this
+        between episodes or between methods would therefore fail with STATUS_NO_MATCHING_FIDUCIAL
+        anywhere but in front of the tag. Pass `force=True` to upload regardless.
+        """
         from bosdyn.api.graph_nav import graph_nav_pb2, nav_pb2
 
         from deploy.graphnav_map import load_graph, load_snapshots
 
         graph = load_graph(map_path)
+        if not force and self.already_localized_to(graph):
+            return graph
+
         waypoint_snapshots, edge_snapshots = load_snapshots(map_path, graph)
 
         self.graph_nav_client.clear_graph()

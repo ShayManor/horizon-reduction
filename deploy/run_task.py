@@ -11,6 +11,7 @@ drives to the goal. Positions come from `seed_tform_body`, which is the map fram
 trained in, so no registration step is involved: put the robot anywhere the map covers, let it
 localize, and the frames already agree.
 """
+import csv
 import os
 import sys
 import time
@@ -49,6 +50,7 @@ flags.DEFINE_list('vel_limits', ['0.6', '0.4', '0.8'], 'Forward, lateral and yaw
 flags.DEFINE_float('reverse_limit', None, 'Backward cap. Defaults to the forward cap.')
 flags.DEFINE_integer('seed', 0, 'Random seed for action sampling.')
 flags.DEFINE_string('log_path', None, 'Optional CSV of the per-step log.')
+flags.DEFINE_bool('resume', False, 'Skip task/episode pairs already in --log_path and append to it.')
 
 config_flags.DEFINE_config_file('agent', 'agents/sharsa.py', lock_config=False)
 
@@ -100,6 +102,24 @@ def main(_):
     agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
     actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(FLAGS.seed))
 
+    # Written per episode rather than at the end: a run that loses the robot, the battery or the
+    # container keeps everything already completed.
+    # `--resume` reads back what an interrupted run already recorded and carries on from there, so
+    # a benchmark split across battery swaps needs no episode arithmetic by hand.
+    done = set()
+    append = False
+    if FLAGS.resume and FLAGS.log_path is not None and os.path.exists(FLAGS.log_path):
+        with open(FLAGS.log_path) as f:
+            for row in csv.DictReader(f):
+                done.add((int(row['task_id']), int(row['episode'])))
+        append = True
+        print(f'resuming: {len(done)} episodes already recorded in {FLAGS.log_path}')
+
+    log = None
+    writer = None
+    if FLAGS.log_path is not None:
+        log = open(FLAGS.log_path, 'a' if append else 'w', newline='')
+
     rows = []
     results = []
     try:
@@ -107,10 +127,13 @@ def main(_):
             task = env.task_infos[task_id - 1]
             print(f'\n=== task {task_id}: {task["task_name"]} ===')
             for episode in range(FLAGS.episodes):
+                if (task_id, episode) in done:
+                    continue
                 ob, info = env.reset(options=dict(task_id=task_id))
                 goal = info['goal']
                 started = time.time()
                 steps = 0
+                episode_rows = []
                 while True:
                     action = np.array(actor_fn(observations=ob, goals=goal))
                     ob, _, terminated, truncated, info = env.step(action)
@@ -119,8 +142,17 @@ def main(_):
                     row['method'] = FLAGS.method
                     row['episode'] = episode
                     rows.append(row)
+                    episode_rows.append(row)
                     if terminated or truncated:
                         break
+                if log is not None:
+                    if writer is None:
+                        writer = csv.DictWriter(log, fieldnames=list(episode_rows[0].keys()))
+                        if not append:
+                            writer.writeheader()
+                    writer.writerows(episode_rows)
+                    log.flush()
+                    os.fsync(log.fileno())
                 outcome = 'REACHED  ' if terminated else 'TIMED OUT'
                 print(f'  task {task_id} ep {episode}: {outcome} {steps:4d} steps, '
                       f'{time.time() - started:5.1f} s, final distance {info["distance_to_goal"]:.2f} m')
@@ -136,14 +168,9 @@ def main(_):
         print(f'  overall: {len(total)}/{len(results)}')
     finally:
         env.close()
-        if FLAGS.log_path is not None and rows:
-            import csv
-
-            with open(FLAGS.log_path, 'w', newline='') as f:
-                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-                writer.writeheader()
-                writer.writerows(rows)
-            print(f'per-step log written to {FLAGS.log_path}')
+        if log is not None:
+            log.close()
+            print(f'per-step log written to {FLAGS.log_path} ({len(rows)} rows)')
 
 
 if __name__ == '__main__':
