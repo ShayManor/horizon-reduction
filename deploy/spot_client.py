@@ -98,6 +98,21 @@ class SpotClient:
         params.vel_limit.CopyFrom(vel_limit)
         return params
 
+    def _wait_for_estop_clear(self, estop_client, timeout=10.0):
+        """Block until the e-stop reads NONE.
+
+        `EstopKeepAlive` checks in from a background thread, so the robot stays stopped for a
+        moment after the endpoint is registered. Powering on inside that window fails.
+        """
+        from bosdyn.api import estop_pb2
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if estop_client.get_status().stop_level == estop_pb2.ESTOP_LEVEL_NONE:
+                return
+            time.sleep(0.2)
+        raise RuntimeError(f'e-stop did not clear within {timeout:.0f}s of registering the endpoint')
+
     def acquire(self):
         """Register the e-stop, take the lease, power on, and stand."""
         from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
@@ -108,6 +123,7 @@ class SpotClient:
         endpoint = EstopEndpoint(client=estop_client, name=self.client_name, estop_timeout=9.0)
         endpoint.force_simple_setup()
         self._estop_keepalive = EstopKeepAlive(endpoint)
+        self._wait_for_estop_clear(estop_client)
 
         lease_client = self.robot.ensure_client(LeaseClient.default_service_name)
         self._lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True)

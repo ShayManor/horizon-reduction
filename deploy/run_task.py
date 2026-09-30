@@ -39,6 +39,8 @@ flags.DEFINE_string('env_name', 'spot-maze-v0', 'Environment name.')
 flags.DEFINE_string('graphnav_map_path', 'spot_data', 'Directory holding the GraphNav map.')
 flags.DEFINE_string('robot_hostname', None, 'Spot address, or "sim" for the occupancy grid.')
 flags.DEFINE_integer('task_id', 1, 'Task to run, 1-based, from the map task list.')
+flags.DEFINE_list('task_ids', None, 'Tasks to sweep, 1-based. Overrides --task_id.')
+flags.DEFINE_string('method', '', 'Label recorded in the log, e.g. phys. Does not affect the run.')
 flags.DEFINE_integer('episodes', 1, 'Episodes to run back to back.')
 flags.DEFINE_integer('max_episode_steps', 500, 'Truncation.')
 flags.DEFINE_float('control_hz', 10.0, 'Control rate in Hz.')
@@ -59,10 +61,18 @@ def example_batch(env):
     """
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    goals = np.zeros((1, GOAL_DIM), dtype=np.float32)
+    # `sharsa` reads only the first three. `sharsa_dual` also builds its representation head from
+    # `high_value_goals`, so the whole set the agents construct from is supplied here.
     return dict(
         observations=np.zeros((1, obs_dim), dtype=np.float32),
+        next_observations=np.zeros((1, obs_dim), dtype=np.float32),
         actions=np.zeros((1, action_dim), dtype=np.float32),
-        high_actor_goals=np.zeros((1, GOAL_DIM), dtype=np.float32),
+        high_actor_goals=goals,
+        high_value_goals=goals,
+        low_actor_goals=goals,
+        value_goals=goals,
+        actor_goals=goals,
     )
 
 
@@ -82,8 +92,7 @@ def main(_):
         reverse_limit=FLAGS.reverse_limit,
         seed=FLAGS.seed,
     )
-    task = env.task_infos[FLAGS.task_id - 1]
-    print(f'task {FLAGS.task_id}: {task["task_name"]}  {task["start"]} -> {task["goal"]}')
+    task_ids = [FLAGS.task_id] if FLAGS.task_ids is None else [int(t) for t in FLAGS.task_ids]
 
     config = FLAGS.agent
     agent_class = agents[config['agent_name']]
@@ -92,25 +101,39 @@ def main(_):
     actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(FLAGS.seed))
 
     rows = []
+    results = []
     try:
-        for episode in range(FLAGS.episodes):
-            ob, info = env.reset(options=dict(task_id=FLAGS.task_id))
-            goal = info['goal']
-            print(f'episode {episode}: localized at ({info["x"]:.2f}, {info["y"]:.2f}), '
-                  f'goal ({goal[0]:.2f}, {goal[1]:.2f}), '
-                  f'{info["distance_to_goal"]:.2f} m away')
-            started = time.time()
-            steps = 0
-            while True:
-                action = np.array(actor_fn(observations=ob, goals=goal))
-                ob, _, terminated, truncated, info = env.step(action)
-                steps += 1
-                rows.append({k: v for k, v in info.items() if k != 'goal'})
-                if terminated or truncated:
-                    break
-            outcome = 'REACHED' if terminated else 'TIMED OUT'
-            print(f'episode {episode}: {outcome} in {steps} steps, {time.time() - started:.1f} s, '
-                  f'final distance {info["distance_to_goal"]:.2f} m')
+        for task_id in task_ids:
+            task = env.task_infos[task_id - 1]
+            print(f'\n=== task {task_id}: {task["task_name"]} ===')
+            for episode in range(FLAGS.episodes):
+                ob, info = env.reset(options=dict(task_id=task_id))
+                goal = info['goal']
+                started = time.time()
+                steps = 0
+                while True:
+                    action = np.array(actor_fn(observations=ob, goals=goal))
+                    ob, _, terminated, truncated, info = env.step(action)
+                    steps += 1
+                    row = {k: v for k, v in info.items() if k != 'goal'}
+                    row['method'] = FLAGS.method
+                    row['episode'] = episode
+                    rows.append(row)
+                    if terminated or truncated:
+                        break
+                outcome = 'REACHED  ' if terminated else 'TIMED OUT'
+                print(f'  task {task_id} ep {episode}: {outcome} {steps:4d} steps, '
+                      f'{time.time() - started:5.1f} s, final distance {info["distance_to_goal"]:.2f} m')
+                results.append(dict(task=task_id, episode=episode, success=bool(terminated), steps=steps))
+
+        print(f'\n=== summary: {FLAGS.method or "run"} ===')
+        for task_id in task_ids:
+            rs = [r for r in results if r['task'] == task_id]
+            done = [r['steps'] for r in rs if r['success']]
+            steps = f'median {sorted(done)[len(done) // 2]}' if done else 'none completed'
+            print(f'  task {task_id}: {len(done)}/{len(rs)} reached, {steps}')
+        total = [r for r in results if r['success']]
+        print(f'  overall: {len(total)}/{len(results)}')
     finally:
         env.close()
         if FLAGS.log_path is not None and rows:
