@@ -80,7 +80,6 @@ class SpotClient:
 
     def _make_mobility_params(self):
         from bosdyn.api import geometry_pb2
-        from bosdyn.api.spot import robot_command_pb2 as spot_command_pb2
         from bosdyn.client.robot_command import RobotCommandBuilder
 
         v_fwd, v_lat, w_max = self.vel_limits
@@ -92,9 +91,12 @@ class SpotClient:
                 linear=geometry_pb2.Vec2(x=-self.reverse_limit, y=-v_lat), angular=-w_max
             ),
         )
-        return RobotCommandBuilder.mobility_params(
-            vel_limit=vel_limit, stair_hint=spot_command_pb2.HINT_AUTO
-        )
+        # `mobility_params()` takes no vel_limit argument in bosdyn 5.x: the cap is a field on the
+        # MobilityParams message it returns. `stair_hint` is a bool there too, so the old
+        # HINT_AUTO enum went in as a truthy stair hint; the lab is flat, so it is dropped.
+        params = RobotCommandBuilder.mobility_params()
+        params.vel_limit.CopyFrom(vel_limit)
+        return params
 
     def acquire(self):
         """Register the e-stop, take the lease, power on, and stand."""
