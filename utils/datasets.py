@@ -5,6 +5,8 @@ import jax
 import numpy as np
 from flax.core.frozen_dict import FrozenDict
 
+from utils.flax_utils import atomic_write
+
 
 def get_size(data):
     """Return the size of the dataset."""
@@ -131,7 +133,7 @@ class ReplayBuffer(Dataset):
     def save(self, path):
         """Write the filled prefix of the buffer to `path` (npz)."""
         data = {k: np.asarray(v)[: self.size] for k, v in self._dict.items()}
-        np.savez(path, **data)
+        atomic_write(path, lambda f: np.savez(f, **data))  # a file object, so np.savez adds no `.npz`
 
     @classmethod
     def load(cls, path, size):

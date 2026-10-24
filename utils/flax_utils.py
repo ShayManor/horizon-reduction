@@ -159,6 +159,26 @@ class TrainState(flax.struct.PyTreeNode):
         return self.apply_gradients(grads=grads), info
 
 
+def atomic_write(path, write, mode='wb'):
+    """Write via `<path>.tmp`, fsync, then rename onto `path`: a power cut leaves the old file or the new one."""
+    tmp = path + '.tmp'
+    try:
+        with open(tmp, mode) as f:
+            write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+    fd = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def save_agent(agent, save_dir, epoch):
     """Save the agent to a file.
 
@@ -172,8 +192,7 @@ def save_agent(agent, save_dir, epoch):
         agent=flax.serialization.to_state_dict(agent),
     )
     save_path = os.path.join(save_dir, f'params_{epoch}.pkl')
-    with open(save_path, 'wb') as f:
-        pickle.dump(save_dict, f)
+    atomic_write(save_path, lambda f: pickle.dump(save_dict, f))
 
     print(f'Saved to {save_path}')
 
@@ -200,3 +219,30 @@ def restore_agent(agent, restore_path, restore_epoch):
     print(f'Restored from {restore_path}')
 
     return agent
+
+
+def restore_modules(agent, restore_path, restore_epoch, modules):
+    """Copy the named modules' params (and their target params, if any) from a checkpoint into `agent`.
+
+    Every other module keeps its fresh init, and so does the optimizer state. Each named module must
+    exist in both the checkpoint and the agent with the same parameter shapes.
+    """
+    candidates = glob.glob(restore_path)
+    assert len(candidates) == 1, f'Found {len(candidates)} candidates: {candidates}'
+    restore_path = candidates[0] + f'/params_{restore_epoch}.pkl'
+    with open(restore_path, 'rb') as f:
+        saved = pickle.load(f)['agent']['network']['params']
+
+    params = dict(agent.network.params)
+    for module in modules:
+        for key in (f'modules_{module}', f'modules_target_{module}'):
+            if key not in params and key.startswith('modules_target_'):
+                continue
+            assert key in params, f'{module} is not a module of this agent: {sorted(params)}'
+            assert key in saved, f'{module} is not in {restore_path}: {sorted(saved)}'
+            fresh_shapes = jax.tree_util.tree_map(jnp.shape, flax.serialization.to_state_dict(params[key]))
+            saved_shapes = jax.tree_util.tree_map(jnp.shape, saved[key])
+            assert fresh_shapes == saved_shapes, f'{key} shapes differ: {fresh_shapes} vs {saved_shapes}'
+            params[key] = flax.serialization.from_state_dict(params[key], saved[key])
+    print(f'Warm start: restored {", ".join(modules)} from {restore_path}')
+    return agent.replace(network=agent.network.replace(params=params))

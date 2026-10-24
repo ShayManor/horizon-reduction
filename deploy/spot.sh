@@ -17,7 +17,7 @@ stop_all() {
   trap - INT
   echo
   echo "Stopping Spot..."
-  # SIGINT the runner's process group and give the arm 5 s to save, then remove the container.
+  # SIGINT the runner's process group and give the arm 10 s to save, then remove the container.
   # Checkpoints are written every 1000 steps anyway, so a forced stop loses at most the last few.
   sudo docker exec "$NAME" python -c "
 import json, os, signal, time
@@ -27,7 +27,7 @@ try:
 except Exception as exc:
     print('no runner to stop:', exc)
     raise SystemExit
-for _ in range(10):
+for _ in range(20):
     try:
         os.kill(pid, 0)
     except OSError:
@@ -64,5 +64,7 @@ exec docker exec $TTY ${STEPS:+-e SPOT_ONLINE_STEPS=$STEPS} $NAME python main.py
 trap '' HUP
 echo "Following the logs. Ctrl+C stops Spot; closing the terminal leaves it running."
 trap stop_all INT
-sudo docker exec "$NAME" sh -c "tail -n 5 -F $ROOT/logs/*.log"
-stop_all
+# An explicit list, as deploy/spot_session.py names them: -F waits for the arm logs that do not exist yet.
+LOGS="$ROOT/logs/runner.log"
+for ARM in sharsa dual phys geo; do LOGS="$LOGS $ROOT/logs/$ARM.log"; done
+sudo docker exec "$NAME" sh -c "tail -n 5 -F $LOGS"

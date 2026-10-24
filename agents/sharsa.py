@@ -217,6 +217,8 @@ class SHARSAAgent(flax.struct.PyTreeNode):
             info[f'high_actor/{k}'] = v
 
         low_actor_loss, low_actor_info = self.low_actor_loss(batch, grad_params, low_actor_rng)
+        if self.config['freeze_low_actor']:  # warm-started walking skill: logged, never updated
+            low_actor_loss = jax.lax.stop_gradient(low_actor_loss)
         for k, v in low_actor_info.items():
             info[f'low_actor/{k}'] = v
 
@@ -397,6 +399,7 @@ def get_config():
             goal_dim=ml_collections.config_dict.placeholder(int),  # Goal dimension (set automatically).
             value_loss_type='bce',  # Value loss type ('squared' or 'bce').
             flow_steps=10,  # Number of flow steps.
+            freeze_low_actor=False,  # Zero the low-level actor loss, keeping a warm-started actor fixed.
             num_samples=32,  # Number of samples for the actor.
             # Dataset hyperparameters.
             dataset_class='HGCDataset',  # Dataset class name.

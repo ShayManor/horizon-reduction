@@ -520,7 +520,7 @@ def test_mapless_sim_without_start_pose_or_mark_fails_clearly(tmp_path):
     assert r.returncode != 0 and 'start_mark.json' in r.stdout + r.stderr
 
 
-def test_pose_jump_aborts_the_session_after_saving_and_resumes_through_warmup(tmp_path, monkeypatch):
+def test_pose_jump_aborts_the_session_after_saving_and_resumes_through_warmup(tmp_path, monkeypatch, capsys):
     import csv
 
     import main
@@ -546,8 +546,9 @@ def test_pose_jump_aborts_the_session_after_saving_and_resumes_through_warmup(tm
             main.FLAGS.unparse_flags()
 
     monkeypatch.setattr(MaplessSpotEnv, 'step', carried_at_step_20)
-    with pytest.raises(SystemExit, match='Pose jump at env step 20'):
+    with pytest.raises(SystemExit) as exc:
         run(tmp_path, '--online_steps=300')
+    assert exc.value.code == 3 and 'Pose jump at env step 20' in capsys.readouterr().out
     assert os.path.exists(tmp_path / 'sampler_20.json') and not os.path.exists(tmp_path / 'params_20.pkl')
     with np.load(tmp_path / 'buffer_20.npz') as f:
         obs, next_obs, terminals = f['observations'], f['next_observations'], f['terminals']
@@ -948,6 +949,98 @@ def test_session_retries_tag_saves_tag_frame_poses_and_queues_arms(tmp_path):
     assert launched == [str(tmp_path)] and list(ARMS) == ['sharsa', 'dual', 'phys', 'geo']
 
 
+def _write_checkpoint(run_dir, step, params=True):
+    import pickle
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    np.savez(run_dir / f'buffer_{step}.npz', a=np.arange(10))
+    if params:
+        (run_dir / f'params_{step}.pkl').write_bytes(pickle.dumps(dict(agent={})))
+    for kind in ('sampler', 'progress'):
+        (run_dir / f'{kind}_{step}.json').write_text('{}')
+
+
+def test_latest_checkpoint_skips_corrupt_set_and_reports_it(tmp_path):
+    from deploy.spot_session import latest_checkpoint
+
+    run = tmp_path / 'runs' / 'dual' / 'e1'
+    for n in (1000, 2000):
+        _write_checkpoint(run, n)
+    (run / 'buffer_2000.npz').write_bytes((run / 'buffer_2000.npz').read_bytes()[:40])
+    said = []
+    assert latest_checkpoint(str(tmp_path), 'dual', said.append) == (str(run), 1000)
+    assert len(said) == 1 and 'skipping checkpoint 2000' in said[0]
+    (run / 'sampler_1000.json').write_text('{"a"')
+    assert latest_checkpoint(str(tmp_path), 'dual', said.append) is None
+    assert len(said) == 3
+
+
+def test_latest_checkpoint_needs_params_unless_warmup(tmp_path):
+    from deploy.spot_session import latest_checkpoint
+
+    run = tmp_path / 'runs' / 'dual' / 'e1'
+    _write_checkpoint(run, 500, params=False)  # warmup: the agent did not exist yet
+    assert latest_checkpoint(str(tmp_path), 'dual', print) == (str(run), 500)
+    _write_checkpoint(run, 1000)
+    _write_checkpoint(run, 2000, params=False)  # power cut between the buffer and the params
+    assert latest_checkpoint(str(tmp_path), 'dual', print) == (str(run), 1000)
+
+
+def test_tmp_leftovers_are_ignored_and_cleaned(tmp_path):
+    from deploy.spot_session import clean_tmp, latest_checkpoint
+
+    run = tmp_path / 'runs' / 'dual' / 'e1'
+    _write_checkpoint(run, 1000)
+    (run / 'buffer_2000.npz.tmp').write_bytes(b'half')
+    assert latest_checkpoint(str(tmp_path), 'dual', print) == (str(run), 1000)
+    clean_tmp(str(tmp_path), 'dual', lambda *a: None)
+    assert not (run / 'buffer_2000.npz.tmp').exists()
+
+
+def test_failed_atomic_save_leaves_no_final_or_tmp_file(tmp_path, monkeypatch):
+    from utils.datasets import ReplayBuffer
+
+    data = dict(observations=np.zeros((2, 3), np.float32), terminals=np.zeros(2))
+    buffer = ReplayBuffer.create_from_initial_dataset(data, 4)
+    path = str(tmp_path / 'buffer_1.npz')
+    buffer.save(path)
+    before = open(path, 'rb').read()
+
+    def boom(f, **data):
+        f.write(b'partial')
+        raise OSError('power cut')
+
+    monkeypatch.setattr(np, 'savez', boom)
+    with pytest.raises(OSError):
+        buffer.save(path)
+    assert open(path, 'rb').read() == before and os.listdir(tmp_path) == ['buffer_1.npz']
+    with pytest.raises(OSError):
+        buffer.save(str(tmp_path / 'buffer_2.npz'))
+    assert os.listdir(tmp_path) == ['buffer_1.npz']
+
+
+def test_runner_resumes_a_session_left_running(tmp_path, monkeypatch):
+    from deploy.spot_session import run_arms, save_session
+
+    monkeypatch.setenv('SPOT_ONLINE_STEPS', '3000')
+    runs = {a: dict(status='pending', run_dirs=[]) for a in ('sharsa', 'dual', 'phys', 'geo')}
+    runs['sharsa']['status'] = 'running'  # the container was removed before the runner could write 'stopped'
+    save_session(str(tmp_path / 'session.json'), dict(tag_id=0, hostname='sim', arms=list(runs), runs=runs))
+    run = tmp_path / 'runs' / 'sharsa' / 'e1'
+    _write_checkpoint(run, 1000)
+    cmds = []
+
+    class Proc:
+        def __init__(self, cmd, **kwargs):
+            cmds.append(cmd)
+
+        def wait(self):
+            return 2
+
+    run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None, sleep_fn=lambda s: None)
+    assert f'--restore_path={run}' in cmds[0] and '--restore_epoch=1000' in cmds[0]
+
+
 def test_runner_runs_arms_in_order_and_resumes_from_last_buffer(tmp_path, monkeypatch):
     from deploy.spot_session import load_session, run_arms, save_session
 
@@ -958,7 +1051,7 @@ def test_runner_runs_arms_in_order_and_resumes_from_last_buffer(tmp_path, monkey
     old = tmp_path / 'runs' / 'dual' / 'p' / 'g' / 'e1'
     old.mkdir(parents=True)
     for n in (1000, 2000):
-        (old / f'buffer_{n}.npz').write_bytes(b'')
+        _write_checkpoint(old, n)
     cmds = []
 
     class Proc:
@@ -968,17 +1061,141 @@ def test_runner_runs_arms_in_order_and_resumes_from_last_buffer(tmp_path, monkey
         def wait(self):
             return 0 if len(cmds) < 2 else 2
 
-    assert run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None) == 2
-    assert [c[c.index('--goal_mode=ab') - 1] for c in cmds] == ['--mapless'] * 2
+    assert run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None, sleep_fn=lambda s: None) == 2
+    assert [c[c.index('--goal_mode=ab') - 1] for c in cmds] == ['--mapless'] * 9
     arms = [next(f for f in c if f.startswith('--save_dir=')).rsplit('/', 1)[1] for c in cmds]
-    assert arms == ['dual', 'phys']
+    assert arms == ['dual'] + ['phys'] * 4 + ['geo'] * 4  # each failing arm is resumed 3 times, then the next runs
     assert f'--restore_path={old}' in cmds[0] and '--restore_epoch=2000' in cmds[0]
     assert '--agent.fk_kappa=15.0' in cmds[1] and not any(f.startswith('--restore') for f in cmds[1])
     for c in cmds:  # absl rejects --agent.x before --agent=
         first = next(i for i, f in enumerate(c) if f.startswith('--agent'))
         assert c[first].startswith('--agent=')
     s = load_session(str(tmp_path / 'session.json'))
-    assert [s['runs'][a]['status'] for a in ('sharsa', 'dual', 'phys', 'geo')] == ['done', 'done', 'failed', 'pending']
+    assert [s['runs'][a]['status'] for a in ('sharsa', 'dual', 'phys', 'geo')] == ['done', 'done', 'failed', 'failed']
+
+
+def _runner_session(tmp_path, arms=('sharsa', 'dual')):
+    from deploy.spot_session import save_session
+
+    runs = {a: dict(status='pending', run_dirs=[]) for a in arms}
+    save_session(str(tmp_path / 'session.json'), dict(tag_id=0, hostname='sim', arms=list(arms), runs=runs))
+
+
+def test_runner_retries_a_failed_arm_from_its_checkpoint_then_moves_on(tmp_path, monkeypatch):
+    from deploy.spot_session import load_session, run_arms
+
+    monkeypatch.setenv('SPOT_ONLINE_STEPS', '3000')
+    _runner_session(tmp_path)
+    run = tmp_path / 'runs' / 'sharsa' / 'e1'
+    codes, cmds, sleeps, lines = {'sharsa': [1, 1, 1, 1], 'dual': [1, 0]}, [], [], []
+
+    class Proc:
+        def __init__(self, cmd, stdout, **kwargs):
+            self.arm = next(f for f in cmd if f.startswith('--save_dir=')).rsplit('/', 1)[1]
+            cmds.append((self.arm, cmd))
+            stdout.write(f'TimedOutError: {self.arm} lost wifi\n')
+            stdout.flush()
+            if self.arm == 'sharsa' and len(cmds) == 1:
+                _write_checkpoint(run, 1000)  # the first attempt saved before it died
+
+        def wait(self):
+            return codes[self.arm].pop(0)
+
+    code = run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: lines.append(a[0]), sleep_fn=sleeps.append)
+    assert code == 1 and [a for a, _ in cmds] == ['sharsa'] * 4 + ['dual'] * 2 and sleeps == [10] * 4
+    assert all(f'--restore_path={run}' in c and '--restore_epoch=1000' in c for _, c in cmds[1:4])
+    assert sum('why: TimedOutError: sharsa lost wifi' in line for line in lines) == 4
+    s = load_session(str(tmp_path / 'session.json'))
+    assert [s['runs'][a]['status'] for a in ('sharsa', 'dual')] == ['failed', 'done']
+
+
+def test_runner_never_retries_an_interrupted_arm(tmp_path):
+    from deploy.spot_session import load_session, run_arms
+
+    _runner_session(tmp_path)
+    cmds = []
+
+    class Proc:
+        def __init__(self, cmd, **kwargs):
+            cmds.append(cmd)
+            self.calls = 0
+
+        def wait(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt  # SIGINT reached the runner; the arm saves and exits non-zero
+            return 1
+
+    sleep = lambda s: pytest.fail('retried an interrupted arm')  # noqa: E731
+    assert run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None, sleep_fn=sleep) == 1
+    s = load_session(str(tmp_path / 'session.json'))
+    assert len(cmds) == 1 and [s['runs'][a]['status'] for a in ('sharsa', 'dual')] == ['stopped', 'pending']
+
+
+def test_runner_stops_on_a_pose_jump_without_retrying(tmp_path):
+    from deploy.spot_session import POSE_JUMP_EXIT, load_session, run_arms
+
+    _runner_session(tmp_path)
+    cmds = []
+
+    class Proc:
+        def __init__(self, cmd, **kwargs):
+            cmds.append(cmd)
+
+        def wait(self):
+            return POSE_JUMP_EXIT
+
+    sleep = lambda s: pytest.fail('retried after a pose jump')  # noqa: E731
+    assert run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None, sleep_fn=sleep) == POSE_JUMP_EXIT
+    s = load_session(str(tmp_path / 'session.json'))
+    assert len(cmds) == 1 and [s['runs'][a]['status'] for a in ('sharsa', 'dual')] == ['stopped', 'pending']
+
+
+def test_runner_clears_its_pid_on_exit_and_on_exception(tmp_path):
+    from deploy.spot_session import load_session, run_arms
+
+    _runner_session(tmp_path)
+
+    class Proc:
+        def __init__(self, cmd, **kwargs):
+            assert load_session(str(tmp_path / 'session.json'))['runner_pid'] == os.getpid()
+
+        def wait(self):
+            return 0
+
+    assert run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None) == 0
+    assert load_session(str(tmp_path / 'session.json'))['runner_pid'] is None
+
+    class Crash(Proc):
+        def wait(self):
+            raise SystemExit(143)  # SIGTERM, through the runner's handler
+
+    _runner_session(tmp_path)
+    with pytest.raises(SystemExit):
+        run_arms(str(tmp_path), popen=Crash, print_fn=lambda *a, **k: None)
+    assert load_session(str(tmp_path / 'session.json'))['runner_pid'] is None
+
+
+def test_runner_resumes_an_arm_stopped_during_its_drain(tmp_path, monkeypatch):
+    from deploy.spot_session import WARMUP_STEPS, run_arms
+
+    monkeypatch.setenv('SPOT_ONLINE_STEPS', '3000')
+    _runner_session(tmp_path, arms=('sharsa',))
+    run = tmp_path / 'runs' / 'sharsa' / 'e1'
+    _write_checkpoint(run, 3000)
+    (run / 'progress_3000.json').write_text(json.dumps(dict(updates=3000 - WARMUP_STEPS - 1)))
+    cmds = []
+
+    class Proc:
+        def __init__(self, cmd, **kwargs):
+            cmds.append(cmd)
+            (run / 'progress_3000.json').write_text(json.dumps(dict(updates=3000 - WARMUP_STEPS)))
+
+        def wait(self):
+            return 1  # e.g. env.close failed after the drain: the next attempt finds the arm complete
+
+    assert run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None, sleep_fn=lambda s: None) == 0
+    assert len(cmds) == 1 and '--restore_epoch=3000' in cmds[0]
 
 
 def test_session_resume_keeps_poses_and_new_moves_old_dir(tmp_path):
@@ -1074,3 +1291,360 @@ def test_detect_fiducial_picks_nearest_tag_and_normal_heading(monkeypatch):
     assert tid == 5 and (x, y) == (4.0, 0.0) and math.isclose(abs(yaw), math.pi)
     objects[:] = []
     assert c.detect_fiducial() is None
+
+
+def test_walk_data_reaches_targets_and_loads(tmp_path):
+    from deploy.gen_walk_data import MAX_EPISODE_STEPS, generate_walk_data
+    from utils.datasets import load_spot_datasets
+
+    paths = generate_walk_data(2000, str(tmp_path))
+    assert [os.path.basename(p) for p in paths] == ['buffer_2000.npz'] and os.listdir(tmp_path) == ['buffer_2000.npz']
+    train, val = load_spot_datasets(paths)
+    assert len(train['observations']) + len(val['observations']) == 2000
+    with np.load(paths[0]) as f:
+        data = {k: f[k] for k in f.files}
+    assert np.all(np.abs(data['actions']) <= 1.0) and np.array_equal(data['oracle_reps'], data['observations'][:, :2])
+    # Stuck detection is off, so an episode shorter than the cap ended at its target.
+    lengths = np.diff(np.r_[-1, np.nonzero(data['terminals'])[0]])[:-1]  # the last one is cut by n_steps
+    assert len(lengths) > 10 and np.mean(lengths < MAX_EPISODE_STEPS) > 0.8
+
+
+def _two_agents(agent_file='agents/sharsa.py'):
+    import runpy
+
+    from agents import agents
+    from deploy.time_jetson import SPOT_OVERRIDES, synthetic_batch
+
+    config = runpy.run_path(agent_file)['get_config']()
+    config.update(SPOT_OVERRIDES)
+    make = agents[config['agent_name']].create
+    return make(0, synthetic_batch(8), config), make(1, synthetic_batch(8), config)
+
+
+@pytest.mark.parametrize('agent_file', AGENT_FILES)
+def test_restore_modules_copies_only_named_modules(tmp_path, agent_file):
+    import jax
+
+    from deploy.time_jetson import synthetic_batch
+    from utils.flax_utils import restore_modules, save_agent
+
+    a, b = _two_agents(agent_file)
+    save_agent(a, str(tmp_path), 7)
+    c = restore_modules(b, str(tmp_path), 7, ['low_actor_flow'])
+    leaves = jax.tree_util.tree_leaves
+    same = lambda x, y: all((u == v).all() for u, v in zip(leaves(x), leaves(y)))  # noqa: E731
+    p, pa, pb = c.network.params, a.network.params, b.network.params
+    assert 'modules_target_low_actor_flow' not in p  # SHARSA keeps no target for the low-level actor
+    assert same(p['modules_low_actor_flow'], pa['modules_low_actor_flow'])
+    for key in ('modules_high_value', 'modules_high_critic', 'modules_target_high_value', 'modules_high_actor_flow'):
+        assert same(p[key], pb[key]) and not same(p[key], pa[key]), key
+    c.update(synthetic_batch(8))  # the copied params keep the fresh optimizer state's structure
+
+
+def test_restore_modules_copies_target_params_and_rejects_unknown_module(tmp_path):
+    import jax
+
+    from utils.flax_utils import restore_modules, save_agent
+
+    a, b = _two_agents()
+    save_agent(a, str(tmp_path), 7)
+    c = restore_modules(b, str(tmp_path), 7, ['high_value'])
+    leaves = lambda t: jax.tree_util.tree_leaves(t)  # noqa: E731
+    for key in ('modules_high_value', 'modules_target_high_value'):
+        assert all((u == v).all() for u, v in zip(leaves(c.network.params[key]), leaves(a.network.params[key])))
+    with pytest.raises(AssertionError, match='not a module'):
+        restore_modules(b, str(tmp_path), 7, ['low_actor'])
+
+
+def test_mapless_warm_start_runs_in_sim(tmp_path):
+    import glob
+    import subprocess
+    import sys
+
+    from deploy.gen_walk_data import generate_walk_data
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data = tmp_path / 'walk'
+    generate_walk_data(2000, str(data))
+    env = {k: v for k, v in os.environ.items() if k != 'WANDB_API_KEY'}
+    env.update(WANDB_MODE='disabled', JAX_PLATFORMS='cpu', HOME=str(tmp_path))
+    cmd = [
+        sys.executable, 'main.py', '--env_name=spot-walk-v0', f'--dataset_dir={data}', f'--save_dir={tmp_path}/pre',
+        '--offline_steps=200', '--save_interval=200', '--log_interval=100', '--eval_interval=0',
+        '--agent.batch_size=16', '--agent.gc_negative=True', '--agent.value_loss_type=squared',
+        '--agent.subgoal_steps=10',
+    ]  # fmt: skip
+    r = subprocess.run(cmd, check=False, cwd=repo, env=env, capture_output=True, text=True, timeout=600)
+    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+    (pre,) = glob.glob(f'{tmp_path}/pre/**/params_200.pkl', recursive=True)
+    warm = [f'--warm_start_path={os.path.dirname(pre)}', '--warm_start_epoch=200',
+            '--warm_start_modules=low_actor_flow']
+    r = _main(tmp_path / 'online', '--start_pose=1,1,0', '--online_steps=200', *warm)
+    assert f'Warm start: restored low_actor_flow from {pre}' in r.stdout
+
+
+def test_walking_warmup_and_frozen_low_actor_act_from_the_warm_start(tmp_path):
+    """A low actor whose only nonzero weight is the output bias (50, -50, 50) always acts (1, -1, 1) after clipping.
+
+    Uniform random warmup never produces that exactly, and an unfrozen actor drifts off it once updates start.
+    """
+    import csv
+    import glob
+    import pickle
+
+    import jax
+
+    from deploy.time_jetson import build_agent
+    from utils.flax_utils import save_agent
+
+    agent, _ = build_agent('agents/sharsa.py', 8)
+    params = dict(agent.network.params)
+    params['modules_low_actor_flow'] = jax.tree_util.tree_map(
+        lambda x: np.full(x.shape, [50.0, -50.0, 50.0], np.float32) if x.shape == (3,) else np.zeros_like(x),
+        params['modules_low_actor_flow'],
+    )
+    assert sum(x.shape == (3,) for x in jax.tree_util.tree_leaves(params['modules_low_actor_flow'])) == 1  # the bias
+    save_agent(agent.replace(network=agent.network.replace(params=params)), str(tmp_path), 0)
+    _main(tmp_path / 'online', '--start_pose=1,1,0', '--online_steps=300', f'--warm_start_path={tmp_path}',
+          '--warm_start_epoch=0', '--agent.freeze_low_actor=True', '--max_episode_steps=100')
+    (run,) = {os.path.dirname(p) for p in glob.glob(f'{tmp_path}/online/**/steps.csv', recursive=True)}
+    with open(os.path.join(run, 'steps.csv')) as f:
+        actions = np.array([[float(r[k]) for k in ('action_x', 'action_y', 'action_w')] for r in csv.DictReader(f)])
+    bad = np.nonzero(~np.all(actions == [1.0, -1.0, 1.0], axis=1))[0]
+    assert len(actions) == 300 and len(bad) == 0, (bad, actions[bad])
+    with open(os.path.join(run, 'params_300.pkl'), 'rb') as f:
+        final = pickle.load(f)['agent']['network']['params']['modules_low_actor_flow']
+    pairs = zip(jax.tree_util.tree_leaves(final), jax.tree_util.tree_leaves(params['modules_low_actor_flow']))
+    assert all(np.array_equal(u, v) for u, v in pairs)  # 200 updates later, still the warm start
+
+
+@pytest.mark.parametrize('agent_file', AGENT_FILES)
+def test_frozen_low_actor_is_bit_identical_after_updates(agent_file):
+    import jax
+
+    from deploy.time_jetson import build_agent, synthetic_batch
+
+    agent, _ = build_agent(agent_file, 8, {'freeze_low_actor': True})
+    before = agent.network.params
+    for _ in range(3):
+        agent, info = agent.update(synthetic_batch(8))
+    after = agent.network.params
+
+    def same(key):
+        pairs = zip(jax.tree_util.tree_leaves(before[key]), jax.tree_util.tree_leaves(after[key]))
+        return all(np.array_equal(u, v) for u, v in pairs)
+
+    assert same('modules_low_actor_flow') and not same('modules_high_value')
+    low = [k for k in info if k.startswith('low_actor/')]
+    assert low and all(np.isfinite(info[k]) for k in low)  # still logged
+
+
+def test_session_offers_walk_pretrain_and_arms_get_the_warm_start(tmp_path):
+    from deploy.spot_session import WALK_DIR, arm_command, load_session, offer_walk_pretrain, run_session
+
+    root = str(tmp_path)
+    assert not any(f.startswith(('--warm_start', '--agent.freeze')) for f in arm_command(root, 'sharsa', 'sim', 100))
+    made = []
+
+    def pretrain(r, print_fn):
+        made.append(r)
+        for step in (500, 10000):
+            run = tmp_path / WALK_DIR / 'runs' / 'p' / 'g' / 'e'
+            run.mkdir(parents=True, exist_ok=True)
+            (run / f'params_{step}.pkl').write_bytes(b'')
+
+    input_fn, prompts = _scripted(['x', 'c'])
+    offer_walk_pretrain(root, input_fn, lambda *a, **k: None, pretrain)
+    assert made == [root] and len(prompts) == 2 and '[c]reate' in prompts[0]
+    run = str(tmp_path / WALK_DIR / 'runs' / 'p' / 'g' / 'e')
+    for arm in ('sharsa', 'dual', 'phys', 'geo'):
+        cmd = arm_command(root, arm, 'sim', 100, restore=('/r', 1000), warm_start=f'{run}/params_10000.pkl')
+        assert cmd[-4:] == [f'--warm_start_path={run}', '--warm_start_epoch=10000',
+                            '--warm_start_modules=low_actor_flow', '--agent.freeze_low_actor=True']
+    input_fn, prompts = _scripted([])
+    offer_walk_pretrain(root, input_fn, lambda *a, **k: None, pretrain)  # exists: nothing asked, nothing made
+    assert made == [root] and prompts == []
+
+    # A fresh session records the highest checkpoint and keeps it, since it knows nothing of the room.
+    client = _SessionClient(misses=0)
+    client.poses = [(2.0, 4.0, 0.0), (2.0, 1.5, 0.0)]
+    run_session(root, 'robot', lambda: client, input_fn=_scripted([])[0], print_fn=lambda *a, **k: None,
+                launch_fn=lambda r: 1)
+    assert load_session(os.path.join(root, 'session.json'))['warm_start'] == f'{run}/params_10000.pkl'
+    client.poses = [(2.0, 4.0, 0.0), (2.0, 1.5, 0.0)]
+    input_fn, prompts = _scripted(['n'])
+    run_session(root, 'robot', lambda: client, input_fn=input_fn, print_fn=lambda *a, **k: None, launch_fn=lambda r: 1,
+                pretrain_fn=pretrain)
+    assert os.path.isdir(tmp_path / WALK_DIR) and made == [root] and not any('[c]reate' in p for p in prompts)
+
+
+def _warm_session(tmp_path, warm_start, legacy=False):
+    from deploy.spot_session import save_session
+
+    session = dict(tag_id=7, end_tag=[3.0, 0.0, 0.0], start_tag=[0.5, 0.0, 0.0], tag_pose=[0, 0, 0], hostname='sim',
+                   arms=['sharsa'], runs={'sharsa': dict(status='pending', run_dirs=[])}, runner_pid=None)
+    if not legacy:
+        session['warm_start'] = warm_start
+    save_session(str(tmp_path / 'session.json'), session)
+
+
+def _runner_cmds(tmp_path):
+    from deploy.spot_session import run_arms
+
+    cmds = []
+
+    class Proc:
+        def __init__(self, cmd, **kwargs):
+            cmds.append(cmd)
+
+        def wait(self):
+            return 0
+
+    code = run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None)
+    return code, cmds
+
+
+def test_resume_uses_the_recorded_warm_start_and_never_offers_pretrain(tmp_path):
+    from deploy.spot_session import WALK_DIR, run_session
+
+    recorded = tmp_path / 'pre' / 'params_10000.pkl'
+    recorded.parent.mkdir()
+    recorded.write_bytes(b'')
+    newer = tmp_path / WALK_DIR / 'runs' / 'e' / 'params_20000.pkl'  # created after the session: not used
+    newer.parent.mkdir(parents=True)
+    newer.write_bytes(b'')
+    _warm_session(tmp_path, str(recorded))
+    input_fn, prompts = _scripted(['r'])
+    launched = []
+    offer = lambda *a, **k: pytest.fail('offered the pretrain on resume')  # noqa: E731
+    run_session(str(tmp_path), 'sim', lambda: _SessionClient(misses=0), input_fn=input_fn,
+                print_fn=lambda *a, **k: None, launch_fn=launched.append, pretrain_fn=offer)
+    assert launched and not any('[c]reate' in p for p in prompts)
+    code, cmds = _runner_cmds(tmp_path)
+    assert code == 0 and f'--warm_start_path={recorded.parent}' in cmds[0] and '--warm_start_epoch=10000' in cmds[0]
+    assert '--agent.freeze_low_actor=True' in cmds[0]
+
+
+def test_resume_with_a_missing_warm_start_stops_instead_of_unfreezing(tmp_path):
+    from deploy.spot_session import run_session
+
+    _warm_session(tmp_path, str(tmp_path / 'gone' / 'params_10000.pkl'))
+    lines, launched = [], []
+    session = run_session(str(tmp_path), 'sim', lambda: pytest.fail('connected'), input_fn=_scripted(['r'])[0],
+                          print_fn=lambda *a, **k: lines.append(a[0]), launch_fn=launched.append)
+    assert session is None and not launched and any('no longer exists' in line for line in lines)
+    code, cmds = _runner_cmds(tmp_path)
+    assert code == 1 and cmds == []
+
+
+def test_legacy_session_without_the_key_runs_cold(tmp_path):
+    from deploy.spot_session import WALK_DIR
+
+    ckpt = tmp_path / WALK_DIR / 'runs' / 'e' / 'params_10000.pkl'  # on disk, but not recorded
+    ckpt.parent.mkdir(parents=True)
+    ckpt.write_bytes(b'')
+    _warm_session(tmp_path, None, legacy=True)
+    code, cmds = _runner_cmds(tmp_path)
+    assert code == 0 and not any(f.startswith(('--warm_start', '--agent.freeze')) for f in cmds[0])
+
+
+def test_skipped_walk_pretrain_starts_the_arms_cold(tmp_path):
+    from deploy.spot_session import offer_walk_pretrain
+
+    input_fn, prompts = _scripted(['s'])
+    offer_walk_pretrain(str(tmp_path), input_fn, lambda *a, **k: None, lambda *a, **k: pytest.fail('pretrained'))
+    assert len(prompts) == 1
+
+
+@pytest.mark.parametrize('async_updates', [True, False])
+def test_async_updates_do_not_stretch_dt(tmp_path, monkeypatch, async_updates):
+    import csv
+    import time
+
+    import envs.spot_mapless
+    import main
+    from agents import agents
+
+    agent_class = agents['sharsa']
+    update = agent_class.update
+
+    def slow_update(self, batch):
+        out = update(self, batch)
+        time.sleep(0.15)  # a 150 ms update: longer than the 100 ms control period
+        return out
+
+    def pace(seconds):  # 2 ms naps: macOS stretches one long sleep by up to 10%, which alone reads as an overrun
+        end = time.perf_counter() + seconds
+        while time.perf_counter() < end:
+            time.sleep(max(0.0, min(0.002, end - time.perf_counter())))
+
+    monkeypatch.setattr(agent_class, 'update', slow_update)
+    monkeypatch.setattr(envs.spot_mapless, '_no_sleep', pace)  # pace the sim at 10 Hz, as on the robot
+    monkeypatch.setattr(main.wandb, 'log', lambda *a, **k: None)  # in-process runs never call wandb.init
+    main.FLAGS(['main.py', '--mapless', '--robot_hostname=sim', '--arena_bounds=0,0,8,6', '--start_pose=1,1,0',
+                '--warmup_steps=50', '--online_steps=250', '--log_interval=250', f'--save_dir={tmp_path}',
+                f'--async_updates={async_updates}'])
+    main.FLAGS.agent.update(batch_size=16, gc_negative=True, value_loss_type='squared', subgoal_steps=10)
+    try:
+        main.train_online(main.FLAGS.agent)
+    finally:
+        main.FLAGS.unparse_flags()
+    with open(tmp_path / 'train.csv') as f:
+        row = list(csv.DictReader(f))[-1]
+    with open(tmp_path / 'progress_250.json') as f:
+        updates = json.load(f)['updates']
+    # Async drains its update debt at the end, so it lands exactly on the env steps since warmup; inline never exceeds it.
+    assert updates == 200 if async_updates else 0 < updates <= 200
+    overrun = float(row['time/overrun_frac'])
+    assert overrun < 0.05 if async_updates else overrun > 0.5
+
+
+def test_async_drain_ends_on_one_update_per_step_and_a_resume_keeps_the_debt(tmp_path, monkeypatch):
+    import time
+
+    import main
+    from agents import agents
+
+    agent_class = agents['sharsa']
+    update = agent_class.update
+
+    def slow_update(self, batch):  # the unpaced sim steps far faster than this learner
+        out = update(self, batch)
+        time.sleep(0.03)
+        return out
+
+    advance, phases, interrupt = main.advance_bar, [], [True]
+
+    def interrupt_drain(bar, env_step, phase):
+        phases.append(phase.split()[0])
+        if interrupt[0] and phase.startswith('drain') and not phase.startswith('drain 0/'):  # Ctrl+C mid-drain
+            raise KeyboardInterrupt
+        advance(bar, env_step, phase)
+
+    monkeypatch.setattr(agent_class, 'update', slow_update)
+    monkeypatch.setattr(main, 'advance_bar', interrupt_drain)
+    monkeypatch.setattr(main.wandb, 'log', lambda *a, **k: None)  # in-process runs never call wandb.init
+
+    def run(save_dir, *extra):
+        main.FLAGS(['main.py', '--mapless', '--robot_hostname=sim', '--arena_bounds=0,0,8,6', '--start_pose=1,1,0',
+                    '--warmup_steps=50', '--online_steps=150', '--log_interval=50', '--save_interval=1000',
+                    f'--save_dir={save_dir}', '--async_updates=True', *extra])
+        main.FLAGS.agent.update(batch_size=16, gc_negative=True, value_loss_type='squared', subgoal_steps=10)
+        try:
+            main.train_online(main.FLAGS.agent)
+        finally:
+            main.FLAGS.unparse_flags()
+
+    with pytest.raises(KeyboardInterrupt):
+        run(tmp_path)
+    with open(tmp_path / 'progress_150.json') as f:
+        first = json.load(f)['updates']
+    assert 0 < first < 100 and os.path.exists(tmp_path / 'params_150.pkl')  # saved with debt left
+
+    interrupt[0] = False
+    del phases[:]
+    os.makedirs(tmp_path / 'resume')
+    run(tmp_path / 'resume', f'--restore_path={tmp_path}', '--restore_epoch=150')
+    with open(tmp_path / 'resume' / 'progress_150.json') as f:
+        assert json.load(f)['updates'] == 100  # 150 env steps - 50 warmup, the first run's debt included
+    assert set(phases) == {'drain'}  # the resume takes no env step, it only finishes the drain

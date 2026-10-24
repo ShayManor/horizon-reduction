@@ -3,6 +3,7 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 from collections import defaultdict
 from functools import partial
@@ -18,7 +19,7 @@ from agents import agents
 from envs.env_utils import make_env_and_datasets, make_online_env
 from utils.datasets import Dataset, GCDataset, HGCDataset, ReplayBuffer, get_size, load_spot_datasets
 from utils.evaluation import evaluate, supply_rng
-from utils.flax_utils import restore_agent, save_agent
+from utils.flax_utils import atomic_write, restore_agent, restore_modules, save_agent
 from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
 
 FLAGS = flags.FLAGS
@@ -64,7 +65,10 @@ flags.DEFINE_float('p_revisit', 0.3, 'Mapless: probability of a goal at a visite
 flags.DEFINE_integer('stuck_window', 30, 'Mapless: steps over which the robot must move stuck_dist.')
 flags.DEFINE_float('stuck_dist', 0.15, 'Mapless: net displacement in metres under which an episode is stuck.')
 flags.DEFINE_list('start_pose', None, 'Mapless sim only: seed-frame x,y,yaw. Defaults to spot_data/start_mark.json.')
-flags.DEFINE_bool('async_updates', False, 'Run updates in a learner thread. Not implemented yet.')
+flags.DEFINE_string('warm_start_path', None, 'Mapless: run dir of a checkpoint to copy --warm_start_modules from.')
+flags.DEFINE_integer('warm_start_epoch', None, 'Mapless: step of the warm-start checkpoint.')
+flags.DEFINE_list('warm_start_modules', ['low_actor_flow'], 'Mapless: modules copied from the warm start.')
+flags.DEFINE_bool('async_updates', False, 'Mapless: run updates in a learner thread, off the control loop.')
 flags.DEFINE_integer('log_interval', 10000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 250000, 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', 5000000, 'Saving interval.')
@@ -160,6 +164,39 @@ def mapless_start_pose():
     return [mark['x'], mark['y'], mark['yaw']]
 
 
+def low_actor_walker(config, action_dim):
+    """The warm start's low-level actor as a policy of (observation, subgoal), for warmup before the agent exists."""
+    import pickle
+
+    import jax.numpy as jnp
+
+    from utils.networks import ActorVectorField
+
+    (run_dir,) = glob.glob(FLAGS.warm_start_path)
+    with open(os.path.join(run_dir, f'params_{FLAGS.warm_start_epoch}.pkl'), 'rb') as f:
+        params = pickle.load(f)['agent']['network']['params']['modules_low_actor_flow']
+    net = ActorVectorField(
+        hidden_dims=config['actor_hidden_dims'], action_dim=action_dim, layer_norm=config['layer_norm']
+    )
+    steps = config['flow_steps']
+
+    @jax.jit
+    def act(ob, subgoal, key):  # the low-level half of `sample_actions`
+        actions = jax.random.normal(key, (action_dim,))
+        for i in range(steps):
+            actions = actions + net.apply({'params': params}, ob, subgoal, actions, jnp.full((1,), i / steps)) / steps
+        return jnp.clip(actions, -1, 1)
+
+    key = jax.random.PRNGKey(FLAGS.seed)
+
+    def walker(ob, subgoal):
+        nonlocal key
+        key, sub = jax.random.split(key)
+        return np.array(act(np.asarray(ob, np.float32), np.asarray(subgoal, np.float32), sub))
+
+    return walker
+
+
 def arm_progress_bar(env_step):
     """One bar per arm, warmup included, labelled with the arm and its place in the session."""
     arm = os.environ.get('SPOT_ARM', 'arm')
@@ -199,7 +236,6 @@ def train_online(config):
         from utils.online_metrics import OnlineMetrics
         from utils.value_query import goal_values
 
-        assert not FLAGS.async_updates, '--async_updates is not implemented yet'
         FLAGS.seed_episodes = 0  # GraphNav is never touched, so warmup is random actions only
         warm_rng = np.random.default_rng(FLAGS.seed)  # untrained V: a uniformly random frontier cell
         if ab:
@@ -223,6 +259,7 @@ def train_online(config):
             stuck_dist=FLAGS.stuck_dist,
         )
     else:
+        assert not FLAGS.async_updates, '--async_updates needs --mapless'
         map_kwargs = dict(graphnav_map_path=FLAGS.graphnav_map_path, task_ids=task_ids)
     env = make_online_env(
         FLAGS.env_name,
@@ -257,15 +294,49 @@ def train_online(config):
     seeded_steps = 0  # offline transitions, which do not count against the online step budget
     # Mapless bookkeeping: where the robot is, the last step's info, and the current episode's totals.
     robot_xy, last_info, ep_metres, ep_blocked, session_started = (0.0, 0.0), None, 0.0, False, False
+    # --async_updates: the learner thread owns the agent. One lock guards the buffer and the boundaries it samples.
+    buffer_lock, budget = threading.Lock(), threading.Condition()
+    learner, learner_stop, learner_error = None, threading.Event(), []
+    allowed = 0  # updates the learner may have taken: updates_per_step per env step after warmup, as inline
+    owed = lambda step: FLAGS.updates_per_step * max(0, step - FLAGS.warmup_steps)  # total, so the debt survives a resume
+    published = latest = None  # (agent, update_info) for the actor every 10 updates; the learner's newest agent
 
     def save_sampler(step):
-        with open(os.path.join(FLAGS.save_dir, f'sampler_{step}.json'), 'w') as f:
-            json.dump(sampler.state_dict(), f)
-        with open(os.path.join(FLAGS.save_dir, f'progress_{step}.json'), 'w') as f:
-            json.dump(online.state_dict(), f)
+        for kind, obj in (('sampler', sampler), ('progress', online)):
+            atomic_write(
+                os.path.join(FLAGS.save_dir, f'{kind}_{step}.json'), lambda f: json.dump(obj.state_dict(), f), 'w'
+            )
 
     def mapless_metrics():
         return online.summary(sampler.stats(), sampler.coverage())
+
+    def learn(agent):
+        """The learner thread: sample and update, never past `allowed`. The actor reads only `published`."""
+        nonlocal published, latest
+        n = start = online.updates  # restored: the update debt from before a stop is still owed
+        try:
+            while not learner_stop.is_set():
+                with budget:
+                    if n >= allowed:  # caught up with the actor
+                        budget.wait(0.1)
+                        continue
+                with buffer_lock:
+                    idxs = np.random.randint(gc_dataset.size, size=config['batch_size'])
+                    batch = gc_dataset.sample(config['batch_size'], idxs=idxs)
+                update_start = time.perf_counter()
+                agent, update_info = jax.block_until_ready(agent.update(batch))
+                online.on_update(None if n == start else 1000 * (time.perf_counter() - update_start))  # compile
+                n += 1
+                latest = agent
+                if n % 10 == 0:
+                    published = (agent, update_info)
+        except Exception as exc:  # noqa: BLE001 - re-raised in the actor thread at its next step
+            learner_error.append(exc)
+
+    def stop_learner():
+        learner_stop.set()
+        if learner is not None:
+            learner.join(timeout=1.0)  # a daemon: one still compiling cannot hold up the saves or the exit
 
     def log_episode(task_idx, steps, terminated, truncated, success, start_step):
         nonlocal episode_idx
@@ -296,19 +367,20 @@ def train_online(config):
             if last_info['jump']:
                 # The run frame no longer matches the floor, so nothing after this could share it.
                 # Raised inside the try below, whose finally saves the buffer, sampler and agent.
-                raise SystemExit(
-                    f'Pose jump at env step {env_step}: odometry reset or the robot was carried. Return Spot '
-                    f'to the start mark and resume with --restore_epoch={env_step}.'
-                )
+                print(f'Pose jump at env step {env_step}: odometry reset or the robot was carried. Point Spot at '
+                      'the AprilTag, run `spot` and answer r to resume.', flush=True)
+                raise SystemExit(3)  # spot_session.POSE_JUMP_EXIT: the runner stops instead of retrying
             retake_control(env.client)
 
     def store_transition(ob, action, next_ob, terminal, info, ep_steps):
         if FLAGS.mapless and info['jump']:
             # Odometry reset or the robot was carried: not a transition. End the episode at the last real one.
             if ep_steps > 1:
-                buffer['terminals'][buffer.size - 1] = 1.0
+                with buffer_lock:
+                    buffer['terminals'][buffer.size - 1] = 1.0
             return
-        buffer.add_transition(make_transition(ob, action, next_ob, terminal))
+        with buffer_lock:
+            buffer.add_transition(make_transition(ob, action, next_ob, terminal))
 
     def log_step(info, terminated, truncated, act_ms=None):
         nonlocal robot_xy, last_info, ep_metres, ep_blocked
@@ -411,6 +483,12 @@ def train_online(config):
         # A restored run skips it, except a mapless one that a pose jump stopped short of warmup.
         do_warmup = FLAGS.restore_path is None or FLAGS.mapless
         bar = arm_progress_bar(env_step) if FLAGS.mapless else None
+        # A warm-started arm walks during warmup: the frozen low actor toward random subgoals 0.5-2 m away, each
+        # held until reached, blocked or 30 steps old. Random actions fill the buffer with driving the high level
+        # then imitates.
+        warm = FLAGS.mapless and FLAGS.warm_start_path is not None
+        walker = low_actor_walker(config, env.action_space.shape[-1]) if warm else None
+        walk_rng = np.random.default_rng(FLAGS.seed + 1)
         while do_warmup and (
             (FLAGS.restore_path is None and episode_idx == 0)
             or episode_idx < FLAGS.seed_episodes
@@ -420,8 +498,17 @@ def train_online(config):
             task_idx = episode_idx % num_tasks
             ob, info = mapless_reset() if FLAGS.mapless else env.reset(options=dict(task_id=task_idx + 1))
             start_step, ep_steps = env_step, 0
+            subgoal, held = None, 0
             while True:
-                if use_graphnav:
+                if walker is not None:
+                    near = subgoal is not None and np.hypot(*(ob[:2] - subgoal)) <= FLAGS.goal_tol
+                    if subgoal is None or held >= 30 or near or info['blocked']:
+                        angle, dist = walk_rng.uniform(-np.pi, np.pi), walk_rng.uniform(0.5, 2.0)
+                        subgoal, held = ob[:2] + dist * np.array([np.cos(angle), np.sin(angle)], np.float32), 0
+                    held += 1
+                    action = walker(ob, subgoal)
+                    next_ob, _, terminated, truncated, info = env.step(action)
+                elif use_graphnav:
                     next_ob, _, terminated, truncated, info = env.step_graphnav()
                     action = np.array(
                         [info['action_x'], info['action_y'], info['action_w']], dtype=np.float32
@@ -453,7 +540,13 @@ def train_online(config):
             not FLAGS.mapless or os.path.exists(os.path.join(candidates[0], f'params_{FLAGS.restore_epoch}.pkl'))
         ):
             agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
+        elif FLAGS.mapless and FLAGS.warm_start_path is not None:
+            # Only when the arm has no params of its own: a resumed arm keeps what it learned.
+            agent = restore_modules(agent, FLAGS.warm_start_path, FLAGS.warm_start_epoch, FLAGS.warm_start_modules)
         actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(FLAGS.seed))
+        if FLAGS.async_updates:  # compile the actor now, so the first actions do not wait on XLA
+            zeros = np.zeros(env.observation_space.shape, env.observation_space.dtype)
+            jax.block_until_ready(actor_fn(observations=zeros, goals=np.zeros(GOAL_SLICE, np.float32)))
 
         # -- training loop ----------------------------------------------------------------------
         first_time = time.time()
@@ -467,7 +560,10 @@ def train_online(config):
         goal = info['goal']
         start_step, ep_steps = env_step, 0
 
-        remaining = online_step_range(env_step, seeded_steps, FLAGS.online_steps)
+        if FLAGS.async_updates and env_step - seeded_steps >= FLAGS.online_steps:
+            remaining = range(0)  # stopped during the drain below: only the update debt is left
+        else:
+            remaining = online_step_range(env_step, seeded_steps, FLAGS.online_steps)
         for env_step in remaining if bar is not None else tqdm.tqdm(remaining, smoothing=0.1, dynamic_ncols=True):
             if bar is not None:
                 advance_bar(bar, env_step, 'train')
@@ -488,7 +584,19 @@ def train_online(config):
             log_step(info, terminated, truncated, act_ms)
             ob = next_ob
 
-            if buffer.size >= FLAGS.warmup_steps:
+            if learner_error:
+                raise RuntimeError('learner thread failed') from learner_error[0]
+            if FLAGS.async_updates and buffer.size >= FLAGS.warmup_steps:
+                if learner is None:  # its first update is the long compile; the actor keeps acting meanwhile
+                    learner = threading.Thread(target=learn, args=(agent,), daemon=True)
+                    learner.start()
+                with budget:
+                    allowed = owed(env_step)
+                    budget.notify()
+                if published is not None and published[0] is not agent:
+                    agent, update_info = published
+                    actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(env_step))
+            elif buffer.size >= FLAGS.warmup_steps:
                 for _ in range(FLAGS.updates_per_step):
                     idxs = np.random.randint(gc_dataset.size, size=config['batch_size'])
                     update_start = time.perf_counter()
@@ -501,7 +609,8 @@ def train_online(config):
 
             if terminated or truncated:
                 log_episode(task_idx, ep_steps, terminated, truncated, terminated, start_step)
-                gc_dataset.rebuild_boundaries()
+                with buffer_lock:
+                    gc_dataset.rebuild_boundaries()
                 task_idx = episode_idx % num_tasks
                 if FLAGS.mapless:
                     ob, info = mapless_reset(agent, ob)
@@ -520,14 +629,50 @@ def train_online(config):
                     metrics.update(mapless_metrics())
                 last_time = time.time()
                 wandb.log(metrics, step=env_step)
-                train_logger.log(metrics, step=env_step)
+                # Before the learner's first publish there are no training keys, which would fix train.csv's header.
+                (warmup_logger if FLAGS.async_updates and not update_info else train_logger).log(metrics, step=env_step)
 
             if env_step % FLAGS.save_interval == 0:
-                save_agent(agent, FLAGS.save_dir, env_step)
+                if FLAGS.mapless:
+                    try:
+                        env.client.stop()  # the saves take seconds; Spot must not keep executing the last velocity
+                    except Exception as exc:  # noqa: BLE001 - lost lease or wifi: the saves matter more
+                        print(f'stop before save failed: {type(exc).__name__}: {exc}')
+                # Only this thread writes the buffer, so it cannot change under the save; the learner only reads it.
+                save_agent(agent if latest is None else latest, FLAGS.save_dir, env_step)
                 buffer.save(os.path.join(FLAGS.save_dir, f'buffer_{env_step}.npz'))
                 if FLAGS.mapless:
                     save_sampler(env_step)
+        if FLAGS.async_updates:
+            # Spot stands while the learner pays its update debt, so every arm ends with updates_per_step updates
+            # per env step after warmup, however slow its update is. Ctrl+C here saves; a resume finishes the drain.
+            try:
+                env.client.stop()
+            except Exception as exc:  # noqa: BLE001 - lost lease or wifi: the drain and saves matter more
+                print(f'stop before drain failed: {type(exc).__name__}: {exc}')
+            with budget:
+                allowed = owed(env_step)
+                budget.notify()
+            if learner is None and online.updates < allowed:  # a resume with only the drain left
+                learner = threading.Thread(target=learn, args=(agent,), daemon=True)
+                learner.start()
+            while online.updates < allowed:
+                if learner_error:
+                    raise RuntimeError('learner thread failed') from learner_error[0]
+                advance_bar(bar, env_step, f'drain {online.updates}/{allowed} updates')
+                bar.refresh()
+                time.sleep(0.5)
+        stop_learner()
+        if learner_error:
+            raise RuntimeError('learner thread failed') from learner_error[0]
     finally:
+        if learner is not None:
+            try:
+                env.client.stop()  # Ctrl+C lands here with the last velocity still commanded
+            except Exception as exc:  # noqa: BLE001 - lost lease or wifi: the saves matter more
+                print(f'stop before save failed: {type(exc).__name__}: {exc}')
+            stop_learner()
+            agent = agent if latest is None else latest  # the learner's newest, not the one published up to 9 ago
         # The transitions the robot produced cannot be regenerated, so they get written whatever
         # ends the run: the step budget, a crash, or a keyboard interrupt.
         buffer.save(os.path.join(FLAGS.save_dir, f'buffer_{env_step}.npz'))
@@ -548,7 +693,10 @@ def train_online(config):
         train_logger.close()
         step_logger.close()
         episode_logger.close()
-        env.close()
+        try:
+            env.close()
+        except Exception as exc:  # noqa: BLE001 - everything is saved; a failed release must not fail the arm
+            print(f'env close failed: {type(exc).__name__}: {exc}')
 
 
 def main(_):
