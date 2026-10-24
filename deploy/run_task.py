@@ -12,6 +12,8 @@ trained in, so no registration step is involved: put the robot anywhere the map 
 localize, and the frames already agree.
 """
 import csv
+import json
+import math
 import os
 import sys
 import time
@@ -27,10 +29,12 @@ from ml_collections import config_flags
 
 from agents import agents
 from envs.env_utils import make_online_env
+from envs.spot_mapless import RunFrame, wait_for_control
 from utils.evaluation import supply_rng
 from utils.flax_utils import restore_agent
 
 FLAGS = flags.FLAGS
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 GOAL_DIM = 2  # the (x, y) slice the high-level policy plans over
 
@@ -51,6 +55,17 @@ flags.DEFINE_float('reverse_limit', None, 'Backward cap. Defaults to the forward
 flags.DEFINE_integer('seed', 0, 'Random seed for action sampling.')
 flags.DEFINE_string('log_path', None, 'Optional CSV of the per-step log.')
 flags.DEFINE_bool('resume', False, 'Skip task/episode pairs already in --log_path and append to it.')
+
+flags.DEFINE_bool('mapless', False, 'Run the mapless pair mode: --pairs_path pairs in the seed frame, no GraphNav map.')
+# score_checkpoints.py defines these two as well, and a flag can only be defined once per process.
+if 'pairs_path' not in FLAGS:
+    flags.DEFINE_string('pairs_path', None, 'Mapless: JSON list of [sx, sy, gx, gy] pairs in the seed frame.')
+if 'start_mark' not in FLAGS:
+    flags.DEFINE_string('start_mark', os.path.join(_REPO, 'spot_data', 'start_mark.json'), 'Start mark of a robot run.')
+flags.DEFINE_string(
+    'start_json', os.path.join(_REPO, 'spot_data', 'start.json'), 'Mapless robot: vision-frame start of the run.'
+)
+flags.DEFINE_list('start_pose', None, 'Mapless sim: seed-frame x,y,yaw of the start. Defaults to --start_mark.')
 
 config_flags.DEFINE_config_file('agent', 'agents/sharsa.py', lock_config=False)
 
@@ -78,9 +93,117 @@ def example_batch(env):
     )
 
 
+def _load_pose(path):
+    with open(path) as f:
+        p = json.load(f)
+    return [p['x'], p['y'], p['yaw']]
+
+
+def run_pairs(env, actor_fn, pairs, mark_frame, log_path, place_fn, resume=False, print_fn=print):
+    """Score seed-frame [sx, sy, gx, gy] pairs, one CSV row each: outcome, steps, metres, interventions, act_ms.
+
+    Each pair first drives to its start under the policy with the start as the goal (unscored). If that
+    does not reach, `place_fn(start_seed, goal_seed)` hands the robot to the operator. The scored episode
+    then runs to its goal. A lease or e-stop loss ends an episode as 'intervention' and `place_fn` follows.
+    `mark_frame` takes seed-frame points to the run frame, whose origin is the pose the policy trained from.
+    """
+    fields = ['pair', 'sx', 'sy', 'gx', 'gy', 'outcome', 'steps', 'metres', 'interventions', 'act_ms', 'start_reached']
+    done = set()
+    if resume and os.path.exists(log_path):
+        with open(log_path) as f:
+            done = {int(r['pair']) for r in csv.DictReader(f)}
+    with open(log_path, 'a' if done else 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if not done:
+            writer.writeheader()
+        for i, (sx, sy, gx, gy) in enumerate(pairs):
+            if i in done:
+                continue
+            interventions = 0
+
+            def episode(goal_run):
+                nonlocal interventions
+                ob, info = env.reset(options=dict(goal=goal_run))
+                goal = info['goal']
+                n, metres, act = 0, 0.0, []
+                while True:
+                    t = time.perf_counter()
+                    action = np.array(actor_fn(observations=ob, goals=goal))
+                    act.append((time.perf_counter() - t) * 1000)
+                    ob, _, terminated, truncated, info = env.step(action)
+                    n, metres = n + 1, metres + info['step_metres']
+                    if terminated or truncated:
+                        break
+                if info['outcome'] == 'intervention':
+                    interventions += 1
+                return info['outcome'], n, metres, float(np.mean(act))
+
+            start_run = mark_frame.to_run(sx, sy, 0.0)[:2]
+            goal_run = mark_frame.to_run(gx, gy, 0.0)[:2]
+            outcome, *_ = episode(start_run)
+            if outcome != 'reached':
+                print_fn(f'pair {i}: start missed ({outcome}); place Spot at ({sx:.2f}, {sy:.2f}) in the seed frame')
+                place_fn((sx, sy), (gx, gy))
+            start_reached = outcome == 'reached'
+            outcome, steps, metres, act_ms = episode(goal_run)
+            if outcome == 'intervention':
+                place_fn(None, None)
+            writer.writerow(dict(pair=i, sx=sx, sy=sy, gx=gx, gy=gy, outcome=outcome, steps=steps, metres=metres,
+                                 interventions=interventions, act_ms=act_ms, start_reached=start_reached))  # fmt: skip
+            f.flush()
+            os.fsync(f.fileno())
+            print_fn(f'pair {i}: {outcome} {steps:4d} steps, {metres:5.2f} m, {interventions} interv, {act_ms:.0f} ms')
+
+
+def main_mapless():
+    assert FLAGS.pairs_path is not None, 'pass --pairs_path'
+    assert FLAGS.log_path is not None, 'pass --log_path (the per-pair CSV; RESUME is looked for beside it)'
+    sim = FLAGS.robot_hostname == 'sim'
+    if sim:
+        start_pose = [float(v) for v in FLAGS.start_pose] if FLAGS.start_pose else _load_pose(FLAGS.start_mark)
+        origin = start_pose
+    else:
+        start_pose, origin = None, _load_pose(FLAGS.start_json)
+    env = make_online_env(
+        FLAGS.env_name,
+        mapless=True,
+        robot_hostname=FLAGS.robot_hostname,
+        start_pose=start_pose,
+        control_hz=FLAGS.control_hz,
+        max_episode_steps=FLAGS.max_episode_steps,
+        goal_tol=FLAGS.goal_tol,
+        vel_limits=tuple(float(v) for v in FLAGS.vel_limits),
+        reverse_limit=FLAGS.reverse_limit,
+        seed=FLAGS.seed,
+    )
+    # The policy trained in the frame whose origin is the launch pose, not wherever the robot stands now.
+    env.frame = RunFrame(origin)
+    config = FLAGS.agent
+    agent = agents[config['agent_name']].create(FLAGS.seed, example_batch(env), config)
+    agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
+    actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(FLAGS.seed))
+    with open(FLAGS.pairs_path) as f:
+        pairs = json.load(f)
+    resume_path = os.path.join(os.path.dirname(os.path.abspath(FLAGS.log_path)), 'RESUME')
+
+    def place(start, goal):
+        if sim:  # no operator in the sim: put the robot where one would
+            if start is not None:
+                env.client.set_pose(*start, math.atan2(goal[1] - start[1], goal[0] - start[0]))
+            return
+        wait_for_control(env.client, resume_path)
+
+    try:
+        run_pairs(env, actor_fn, pairs, RunFrame(_load_pose(FLAGS.start_mark)), FLAGS.log_path, place, FLAGS.resume)
+    finally:
+        env.close()
+
+
 def main(_):
     assert FLAGS.restore_path is not None, 'pass --restore_path'
     assert FLAGS.robot_hostname is not None, 'pass --robot_hostname (an address, or "sim")'
+    if FLAGS.mapless:
+        return main_mapless()
 
     env = make_online_env(
         FLAGS.env_name,
@@ -114,6 +237,13 @@ def main(_):
                 done.add((int(row['task_id']), int(row['episode'])))
         append = True
         print(f'resuming: {len(done)} episodes already recorded in {FLAGS.log_path}')
+
+    # Never destroy an existing log. Without --resume the file would be reopened 'w', which is
+    # how a rerun silently wipes completed episodes; move it aside instead.
+    if FLAGS.log_path is not None and os.path.exists(FLAGS.log_path) and not append:
+        backup = f'{FLAGS.log_path}.bak-{int(time.time())}'
+        os.rename(FLAGS.log_path, backup)
+        print(f'existing log moved to {backup} (pass --resume to continue it instead)')
 
     log = None
     writer = None

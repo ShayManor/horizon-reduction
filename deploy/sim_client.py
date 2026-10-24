@@ -120,10 +120,16 @@ class SimSpotClient(SpotClient):
         Straight-line descent would drive into the island. This is the same field the offline
         generator followed, so GraphNav-driven seed episodes here look like the offline episodes.
         """
-        if waypoint_id in self._fields:
-            return self._fields[waypoint_id]
+        if waypoint_id not in self._fields:
+            self._fields[waypoint_id] = self.distance_field_xy(*self.waypoint_xy[waypoint_id])
+        return self._fields[waypoint_id]
 
-        source = self._nearest_free(self._cell(*self.waypoint_xy[waypoint_id]))
+    def distance_field_xy(self, x, y):
+        """Free-space distance to the free cell nearest (x, y). Cached per source cell."""
+        source = self._nearest_free(self._cell(x, y))
+        if source in self._fields:
+            return self._fields[source]
+
         dist = np.full((self.ny, self.nx), np.inf)
         dist[source] = 0.0
         frontier = [(0.0, source)]
@@ -140,7 +146,7 @@ class SimSpotClient(SpotClient):
                     dist[row, col] = nd
                     heapq.heappush(frontier, (nd, (row, col)))
 
-        self._fields[waypoint_id] = dist
+        self._fields[source] = dist
         return dist
 
     def _descend(self, field, x, y):
@@ -211,9 +217,11 @@ class SimSpotClient(SpotClient):
 
     def get_state(self):
         x, y, yaw = self.pose
+        # Mapless mode passes no waypoints, so there is nothing to be nearest to.
         nearest = min(
             self.waypoint_xy,
             key=lambda w: math.hypot(x - self.waypoint_xy[w][0], y - self.waypoint_xy[w][1]),
+            default='',
         )
         return dict(
             x=x,
@@ -227,6 +235,12 @@ class SimSpotClient(SpotClient):
             battery=100.0,
             error='',
         )
+
+    def set_pose(self, x, y, yaw):
+        """Place the robot at rest. Mapless mode starts here instead of on a waypoint."""
+        self.pose = [float(x), float(y), float(yaw)]
+        self.vel = [0.0, 0.0, 0.0]
+        self.blocked = False
 
     # -- GraphNav -----------------------------------------------------------------------------
 

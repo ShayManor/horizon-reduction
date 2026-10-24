@@ -2,8 +2,10 @@ import glob
 import json
 import os
 import random
+import sys
 import time
 from collections import defaultdict
+from functools import partial
 
 import jax
 import numpy as np
@@ -53,6 +55,16 @@ flags.DEFINE_integer('seed_episodes', 0, 'GraphNav-driven episodes collected bef
 flags.DEFINE_float('goal_tol', 0.5, 'Goal tolerance in metres.')
 flags.DEFINE_list('vel_limits', ['0.6', '0.4', '0.8'], 'Forward, lateral and yaw caps. Measure these in your space.')
 flags.DEFINE_float('reverse_limit', None, 'Backward cap in m/s. Defaults to the forward cap.')
+flags.DEFINE_bool('mapless', False, 'Train with no map: run-frame odometry, frontier goals, reset-free episodes.')
+flags.DEFINE_list('arena_bounds', None, 'Mapless: xmin,ymin,xmax,ymax in the run frame, in metres. Required.')
+flags.DEFINE_enum('goal_mode', 'frontier', ['frontier', 'ab'], 'Mapless: frontier sampler, or end/start (session).')
+flags.DEFINE_string('session_path', None, 'Mapless ab: session.json from deploy/spot_session.py (tag, start, end).')
+flags.DEFINE_enum('goal_rule', 'value', ['value', 'nearest'], 'Mapless: frontier cell with the highest V, or nearest.')
+flags.DEFINE_float('p_revisit', 0.3, 'Mapless: probability of a goal at a visited cell instead of the frontier.')
+flags.DEFINE_integer('stuck_window', 30, 'Mapless: steps over which the robot must move stuck_dist.')
+flags.DEFINE_float('stuck_dist', 0.15, 'Mapless: net displacement in metres under which an episode is stuck.')
+flags.DEFINE_list('start_pose', None, 'Mapless sim only: seed-frame x,y,yaw. Defaults to spot_data/start_mark.json.')
+flags.DEFINE_bool('async_updates', False, 'Run updates in a learner thread. Not implemented yet.')
 flags.DEFINE_integer('log_interval', 10000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 250000, 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', 5000000, 'Saving interval.')
@@ -133,6 +145,21 @@ def online_step_range(env_step, seeded_steps, online_steps):
     return steps
 
 
+def mapless_start_pose():
+    """The sim's seed-frame start pose: `--start_pose`, else the start mark. The robot ignores it."""
+    from envs.spot_maze import SIM_HOSTNAME
+
+    if FLAGS.robot_hostname != SIM_HOSTNAME:
+        return None
+    if FLAGS.start_pose is not None:
+        return [float(v) for v in FLAGS.start_pose]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'spot_data', 'start_mark.json')
+    assert os.path.exists(path), f'the mapless sim needs --start_pose=x,y,yaw or {path}'
+    with open(path) as f:
+        mark = json.load(f)
+    return [mark['x'], mark['y'], mark['yaw']]
+
+
 def train_online(config):
     """Train on the robot: step it, fill the buffer, update, repeat.
 
@@ -145,11 +172,41 @@ def train_online(config):
     agent_class = agents[config['agent_name']]
 
     task_ids = None if FLAGS.task_ids is None else [int(t) for t in FLAGS.task_ids]
+    ab = FLAGS.mapless and FLAGS.goal_mode == 'ab'
+    if FLAGS.mapless:
+        from envs.spot_mapless import ABGoals, GoalSampler, RunFrame, wait_for_control
+        from utils.online_metrics import OnlineMetrics
+        from utils.value_query import goal_values
+
+        assert not FLAGS.async_updates, '--async_updates is not implemented yet'
+        FLAGS.seed_episodes = 0  # GraphNav is never touched, so warmup is random actions only
+        warm_rng = np.random.default_rng(FLAGS.seed)  # untrained V: a uniformly random frontier cell
+        if ab:
+            # The run frame is the AprilTag's. The sim's tag pose is stored; the robot's is detected below.
+            from deploy.spot_session import load_session, tag_frame
+            from envs.spot_maze import SIM_HOSTNAME
+
+            session = load_session(FLAGS.session_path)
+            sampler = ABGoals(session['end_tag'], session['start_tag'])
+            frame = RunFrame(session['tag_pose']) if FLAGS.robot_hostname == SIM_HOSTNAME else None
+            start_pose = None if frame is None else list(frame.from_run(*session['start_tag']))
+        else:
+            assert FLAGS.arena_bounds is not None, '--mapless needs --arena_bounds=xmin,ymin,xmax,ymax (run frame, m)'
+            sampler = GoalSampler(
+                [float(v) for v in FLAGS.arena_bounds], p_revisit=FLAGS.p_revisit, rule=FLAGS.goal_rule, seed=FLAGS.seed
+            )
+            frame, start_pose = None, mapless_start_pose()
+        online = OnlineMetrics(1.0 / FLAGS.control_hz)
+        map_kwargs = dict(
+            mapless=True, start_pose=start_pose, frame=frame, stuck_window=FLAGS.stuck_window,
+            stuck_dist=FLAGS.stuck_dist,
+        )
+    else:
+        map_kwargs = dict(graphnav_map_path=FLAGS.graphnav_map_path, task_ids=task_ids)
     env = make_online_env(
         FLAGS.env_name,
         robot_hostname=FLAGS.robot_hostname,
-        graphnav_map_path=FLAGS.graphnav_map_path,
-        task_ids=task_ids,
+        **map_kwargs,
         control_hz=FLAGS.control_hz,
         max_episode_steps=FLAGS.max_episode_steps,
         goal_tol=FLAGS.goal_tol,
@@ -157,27 +214,54 @@ def train_online(config):
         reverse_limit=FLAGS.reverse_limit,
         seed=FLAGS.seed,
     )
-    tasks = env.task_infos
+    if ab and env.frame is None:
+        env.frame = tag_frame(env.client, session)
+    # Mapless episodes have no task: one name keeps `episode_metrics` working per task as before.
+    # In ab mode the goal's name is the task, so evaluation/* is per direction.
+    tasks = [dict(task_name='mapless')] if FLAGS.mapless else env.task_infos
+    if ab:
+        tasks = [dict(task_name=name) for name in ABGoals.names]
     num_tasks = len(tasks)
 
     train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
     step_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'steps.csv'))
     episode_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'episodes.csv'))
+    session_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'session_log.csv')) if FLAGS.mapless else None
+    # Warmup rows carry no training keys and CsvLogger fixes its header on the first row, so they get their own file.
+    warmup_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'warmup.csv')) if FLAGS.mapless else None
 
     episode_records = []
     episode_idx = 0
     env_step = 0
     seeded_steps = 0  # offline transitions, which do not count against the online step budget
+    # Mapless bookkeeping: where the robot is, the last step's info, and the current episode's totals.
+    robot_xy, last_info, ep_metres, ep_blocked, session_started = (0.0, 0.0), None, 0.0, False, False
+
+    def save_sampler(step):
+        with open(os.path.join(FLAGS.save_dir, f'sampler_{step}.json'), 'w') as f:
+            json.dump(sampler.state_dict(), f)
+        with open(os.path.join(FLAGS.save_dir, f'progress_{step}.json'), 'w') as f:
+            json.dump(online.state_dict(), f)
+
+    def mapless_metrics():
+        return online.summary(sampler.stats(), sampler.coverage())
 
     def log_episode(task_idx, steps, terminated, truncated, success, start_step):
         nonlocal episode_idx
+        task_idx = sampler.idx if ab else task_idx  # read before `report` switches the goal
         task = tasks[task_idx]
+        if FLAGS.mapless:
+            goal, outcome = last_info['goal'], last_info['outcome']
+            sampler.report(goal, outcome, ep_blocked, warmup=buffer.size < FLAGS.warmup_steps, end_xy=robot_xy)
+            online.on_episode(outcome)
+            where = dict(goal_x=float(goal[0]), goal_y=float(goal[1]), outcome=outcome, metres=ep_metres)
+        else:
+            where = dict(start_waypoint=task['start'], goal_waypoint=task['goal'])
         record = dict(
             episode=episode_idx,
             task_id=task_idx + 1,
             task_name=task['task_name'],
-            start_waypoint=task['start'],
-            goal_waypoint=task['goal'],
+            **where,
             steps=steps,
             terminated=int(terminated),
             truncated=int(truncated),
@@ -187,13 +271,63 @@ def train_online(config):
         episode_records.append(record)
         episode_logger.log(dict(record), step=env_step)
         episode_idx += 1
+        if FLAGS.mapless and outcome == 'intervention':
+            if last_info['jump']:
+                # The run frame no longer matches the floor, so nothing after this could share it.
+                # Raised inside the try below, whose finally saves the buffer, sampler and agent.
+                raise SystemExit(
+                    f'Pose jump at env step {env_step}: odometry reset or the robot was carried. Return Spot '
+                    f'to the start mark and resume with --restore_epoch={env_step}.'
+                )
+            wait_for_control(env.client, os.path.join(FLAGS.save_dir, 'RESUME'))
 
-    def log_step(info, terminated, truncated):
+    def store_transition(ob, action, next_ob, terminal, info, ep_steps):
+        if FLAGS.mapless and info['jump']:
+            # Odometry reset or the robot was carried: not a transition. End the episode at the last real one.
+            if ep_steps > 1:
+                buffer['terminals'][buffer.size - 1] = 1.0
+            return
+        buffer.add_transition(make_transition(ob, action, next_ob, terminal))
+
+    def log_step(info, terminated, truncated, act_ms=None):
+        nonlocal robot_xy, last_info, ep_metres, ep_blocked
         row = {k: v for k, v in info.items() if k != 'goal'}
         row['episode'] = episode_idx
         row['terminated'] = int(terminated)
         row['truncated'] = int(truncated)
         step_logger.log(row, step=env_step)
+        if FLAGS.mapless:
+            online.on_step(info, act_ms)
+            if not info['jump']:
+                sampler.observe(info['x'], info['y'])
+            robot_xy, last_info = (info['x'], info['y']), info
+            ep_metres += info['step_metres']
+            ep_blocked = ep_blocked or info['blocked']
+
+    def mapless_reset(agent=None, ob=None):
+        """Pick the next goal and attempt it from wherever the robot stands. V scores it once trained."""
+        nonlocal ep_metres, ep_blocked, session_started
+        warm = agent is None or buffer.size < FLAGS.warmup_steps
+        value_fn = (lambda goals: warm_rng.random(len(goals))) if warm else partial(goal_values, agent, ob)
+        ob, info = env.reset(options=dict(goal=sampler.sample(robot_xy, value_fn)))
+        sampler.observe(info['x'], info['y'])
+        ep_metres, ep_blocked = 0.0, False
+        if not session_started:
+            session_logger.log(
+                dict(
+                    event='start',
+                    wall_time=time.time(),
+                    x=info['x'],
+                    y=info['y'],
+                    yaw=info['yaw'],
+                    drift_x='',
+                    drift_y='',
+                    drift_yaw='',
+                ),
+                step=env_step,
+            )
+            session_started = True
+        return ob, info
 
     # -- buffer: restored, or created and filled by warmup episodes ---------------------------
     if FLAGS.restore_path is not None:
@@ -225,6 +359,19 @@ def train_online(config):
         # A crash lands mid-episode. The run stopped at that index, so it is a real trajectory
         # boundary; marking it keeps the partial episode instead of discarding its transitions.
         buffer['terminals'][buffer.size - 1] = 1.0
+        if FLAGS.mapless:
+            sampler_path = os.path.join(candidates[0], f'sampler_{FLAGS.restore_epoch}.json')
+            if os.path.exists(sampler_path):
+                with open(sampler_path) as f:
+                    sampler.load_state_dict(json.load(f))
+                print(f'Restored sampler from {sampler_path}')
+            progress_path = os.path.join(candidates[0], f'progress_{FLAGS.restore_epoch}.json')
+            if os.path.exists(progress_path):
+                with open(progress_path) as f:
+                    online.load_state_dict(json.load(f))
+            else:
+                print(f'No {progress_path}: metres, updates and safety counters restart at 0.')
+            online.env_steps = env_step  # continuous across sessions even when only the buffer was restored
     else:
         # `ReplayBuffer.create` reads only shape and dtype off the example, so this costs no robot
         # time and the first reset below is the first real one.
@@ -234,14 +381,22 @@ def train_online(config):
             make_transition(example_ob, example_action, example_ob, 0.0), FLAGS.buffer_size
         )
 
+    agent = None
+    try:
         # Warmup runs without an agent: `GCDataset` asserts a terminal at its last index, so the
         # buffer needs at least one complete episode before the agent can be built from a batch.
         # GraphNav drives `seed_episodes` of them, which gives better state coverage than random
         # actions and costs nothing, then uniform random actions fill the rest.
-        while episode_idx == 0 or episode_idx < FLAGS.seed_episodes or buffer.size < FLAGS.warmup_steps:
+        # A restored run skips it, except a mapless one that a pose jump stopped short of warmup.
+        do_warmup = FLAGS.restore_path is None or FLAGS.mapless
+        while do_warmup and (
+            (FLAGS.restore_path is None and episode_idx == 0)
+            or episode_idx < FLAGS.seed_episodes
+            or buffer.size < FLAGS.warmup_steps
+        ):
             use_graphnav = episode_idx < FLAGS.seed_episodes
             task_idx = episode_idx % num_tasks
-            ob, info = env.reset(options=dict(task_id=task_idx + 1))
+            ob, info = mapless_reset() if FLAGS.mapless else env.reset(options=dict(task_id=task_idx + 1))
             start_step, ep_steps = env_step, 0
             while True:
                 if use_graphnav:
@@ -254,55 +409,78 @@ def train_online(config):
                     next_ob, _, terminated, truncated, info = env.step(action)
                 env_step += 1
                 ep_steps += 1
-                buffer.add_transition(
-                    make_transition(ob, action, next_ob, float(terminated or truncated))
-                )
+                store_transition(ob, action, next_ob, float(terminated or truncated), info, ep_steps)
                 log_step(info, terminated, truncated)
                 ob = next_ob
+                if FLAGS.mapless and env_step % FLAGS.log_interval == 0:
+                    warmup_metrics = dict(mapless_metrics(), **{'buffer/size': buffer.size})
+                    wandb.log(warmup_metrics, step=env_step)
+                    warmup_logger.log(warmup_metrics, step=env_step)
                 if terminated or truncated:
                     break
             log_episode(task_idx, ep_steps, terminated, truncated, terminated, start_step)
 
-    # -- agent --------------------------------------------------------------------------------
-    gc_dataset = dataset_class(buffer, config)
-    gc_dataset.rebuild_boundaries()
-    agent = agent_class.create(FLAGS.seed, gc_dataset.sample(1, idxs=np.array([0])), config)
-    if FLAGS.restore_path is not None:
-        agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
-    actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(FLAGS.seed))
+        # -- agent ----------------------------------------------------------------------------
+        gc_dataset = dataset_class(buffer, config)
+        gc_dataset.rebuild_boundaries()
+        agent = agent_class.create(FLAGS.seed, gc_dataset.sample(1, idxs=np.array([0])), config)
+        # A pose jump during mapless warmup aborts before any agent exists, so there is nothing to restore.
+        if FLAGS.restore_path is not None and (
+            not FLAGS.mapless or os.path.exists(os.path.join(candidates[0], f'params_{FLAGS.restore_epoch}.pkl'))
+        ):
+            agent = restore_agent(agent, FLAGS.restore_path, FLAGS.restore_epoch)
+        actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(FLAGS.seed))
 
-    # -- training loop --------------------------------------------------------------------------
-    first_time = time.time()
-    last_time = time.time()
-    update_info = {}
-    task_idx = episode_idx % num_tasks
-    ob, info = env.reset(options=dict(task_id=task_idx + 1))
-    goal = info['goal']
-    start_step, ep_steps = env_step, 0
+        # -- training loop ----------------------------------------------------------------------
+        first_time = time.time()
+        first_act = first_update = True
+        last_time = time.time()
+        update_info = {}
+        task_idx = episode_idx % num_tasks
+        # The loop's first goal is picked without V: a resumed session has no observation to value
+        # it from.
+        ob, info = mapless_reset() if FLAGS.mapless else env.reset(options=dict(task_id=task_idx + 1))
+        goal = info['goal']
+        start_step, ep_steps = env_step, 0
 
-    remaining = online_step_range(env_step, seeded_steps, FLAGS.online_steps)
-    try:
+        remaining = online_step_range(env_step, seeded_steps, FLAGS.online_steps)
         for env_step in tqdm.tqdm(remaining, smoothing=0.1, dynamic_ncols=True):
             # The acting policy is the agent's own sampling. SHARSA's flow actor ignores
             # `temperature`; exploration is the noise the flow starts from, reseeded every step.
-            action = np.array(actor_fn(observations=ob, goals=goal))
+            if FLAGS.mapless:
+                act_start = time.perf_counter()
+                action = np.array(jax.block_until_ready(actor_fn(observations=ob, goals=goal)))
+                # The process's first call includes XLA compile time, which is not per-decision latency.
+                act_ms = None if first_act else 1000 * (time.perf_counter() - act_start)
+                first_act = False
+            else:
+                action = np.array(actor_fn(observations=ob, goals=goal))
+                act_ms = None
             next_ob, _, terminated, truncated, info = env.step(action)
             ep_steps += 1
-            buffer.add_transition(make_transition(ob, action, next_ob, float(terminated or truncated)))
-            log_step(info, terminated, truncated)
+            store_transition(ob, action, next_ob, float(terminated or truncated), info, ep_steps)
+            log_step(info, terminated, truncated, act_ms)
             ob = next_ob
 
             if buffer.size >= FLAGS.warmup_steps:
                 for _ in range(FLAGS.updates_per_step):
                     idxs = np.random.randint(gc_dataset.size, size=config['batch_size'])
+                    update_start = time.perf_counter()
                     agent, update_info = agent.update(gc_dataset.sample(config['batch_size'], idxs=idxs))
+                    if FLAGS.mapless:
+                        jax.block_until_ready((agent, update_info))
+                        online.on_update(None if first_update else 1000 * (time.perf_counter() - update_start))
+                        first_update = False
                 actor_fn = supply_rng(agent.sample_actions, rng=jax.random.PRNGKey(env_step))
 
             if terminated or truncated:
                 log_episode(task_idx, ep_steps, terminated, truncated, terminated, start_step)
                 gc_dataset.rebuild_boundaries()
                 task_idx = episode_idx % num_tasks
-                ob, info = env.reset(options=dict(task_id=task_idx + 1))
+                if FLAGS.mapless:
+                    ob, info = mapless_reset(agent, ob)
+                else:
+                    ob, info = env.reset(options=dict(task_id=task_idx + 1))
                 goal = info['goal']
                 start_step, ep_steps = env_step, 0
 
@@ -312,6 +490,8 @@ def train_online(config):
                 metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
                 metrics['time/total_time'] = time.time() - first_time
                 metrics['buffer/size'] = buffer.size
+                if FLAGS.mapless:
+                    metrics.update(mapless_metrics())
                 last_time = time.time()
                 wandb.log(metrics, step=env_step)
                 train_logger.log(metrics, step=env_step)
@@ -319,11 +499,26 @@ def train_online(config):
             if env_step % FLAGS.save_interval == 0:
                 save_agent(agent, FLAGS.save_dir, env_step)
                 buffer.save(os.path.join(FLAGS.save_dir, f'buffer_{env_step}.npz'))
+                if FLAGS.mapless:
+                    save_sampler(env_step)
     finally:
         # The transitions the robot produced cannot be regenerated, so they get written whatever
         # ends the run: the step budget, a crash, or a keyboard interrupt.
         buffer.save(os.path.join(FLAGS.save_dir, f'buffer_{env_step}.npz'))
-        save_agent(agent, FLAGS.save_dir, env_step)
+        if agent is not None:  # a crash or pose jump during warmup comes before the agent exists
+            save_agent(agent, FLAGS.save_dir, env_step)
+        if FLAGS.mapless:
+            save_sampler(env_step)
+            # Drift: the run-frame pose read at session end, with Spot back on the start mark.
+            try:
+                x, y, yaw = env.frame.to_run(*(env.client.get_state()[k] for k in ('x', 'y', 'yaw')))
+                session_logger.log(
+                    dict(event='end', wall_time=time.time(), x=x, y=y, yaw=yaw, drift_x=x, drift_y=y, drift_yaw=yaw),
+                    step=env_step,
+                )
+            except Exception as exc:  # noqa: BLE001 - the saves above matter more than this row
+                print(f'session end pose not logged: {type(exc).__name__}: {exc}')
+            session_logger.close()
         train_logger.close()
         step_logger.close()
         episode_logger.close()
@@ -485,4 +680,10 @@ def main(_):
 
 
 if __name__ == '__main__':
-    app.run(main)
+    # No arguments, or --spot_sim alone: the guided Spot session, which launches the arms itself.
+    if sys.argv[1:] in ([], ['--spot_sim']):
+        from deploy.spot_session import main as session_main
+
+        session_main(sim=sys.argv[1:] == ['--spot_sim'])
+    else:
+        app.run(main)
