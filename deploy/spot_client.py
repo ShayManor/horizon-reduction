@@ -156,32 +156,34 @@ class SpotClient:
 
         # Pressing Enter means "take the robot and go": anything another client left that holds the
         # motors off is removed, and power-on is retried after clearing it again.
-        for attempt in range(3):
+        # A client that died less than `max_age` ago still blocks; keep retrying until it ages out.
+        for attempt in range(10):
             self._clear_keepalive_policies()
             try:
                 self.robot.power_on(timeout_sec=20)
                 break
             except Exception as exc:  # noqa: BLE001 - retry whatever refused the power-on
                 print(f'power on refused ({type(exc).__name__}), clearing and retrying')
-                if attempt == 2:
+                if attempt == 9:
                     raise
-                self._setup_estop(estop_client)
-                time.sleep(1.0)
+                time.sleep(2.0)
         self._stand()
 
-    def _clear_keepalive_policies(self):
-        """Remove every keepalive policy that can hold the motors off.
+    def _clear_keepalive_policies(self, max_age=10.0):
+        """Remove keepalive policies left by dead clients that hold the motors off.
 
-        The tablet registers a "motors off on comms loss" policy; once it hands control over, that
-        policy refuses power-on (KeepaliveMotorsOffError). This process takes control
-        unconditionally, so any such policy, stale or live, is removed.
+        A client that went away (the tablet after handing over, a killed run) leaves its "motors off
+        on comms loss" policy behind, and the robot then refuses power-on (KeepaliveMotorsOffError).
+        Only policies that have stopped checking in for `max_age` seconds are removed: the live one
+        belongs to this process's own e-stop, and removing it makes the robot sit down.
         """
         from bosdyn.client.keepalive import KeepaliveClient
 
         client = self.robot.ensure_client(KeepaliveClient.default_service_name)
+        now = self.robot.time_sync.robot_timestamp_from_local_secs(time.time()).seconds
         blocking = []
         for live in client.get_status().status:
-            if any(
+            if now - live.last_checkin.seconds > max_age and any(
                 a.HasField('controlled_motors_off') or a.HasField('immediate_robot_off')
                 for a in live.policy.actions
             ):
