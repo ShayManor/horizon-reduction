@@ -154,8 +154,41 @@ class SpotClient:
             lease_client.take()
             self._lease_keepalive = LeaseKeepAlive(lease_client, return_at_exit=True)
 
-        self.robot.power_on(timeout_sec=20)
+        # Pressing Enter means "take the robot and go": anything another client left that holds the
+        # motors off is removed, and power-on is retried after clearing it again.
+        for attempt in range(3):
+            self._clear_keepalive_policies()
+            try:
+                self.robot.power_on(timeout_sec=20)
+                break
+            except Exception as exc:  # noqa: BLE001 - retry whatever refused the power-on
+                print(f'power on refused ({type(exc).__name__}), clearing and retrying')
+                if attempt == 2:
+                    raise
+                self._setup_estop(estop_client)
+                time.sleep(1.0)
         self._stand()
+
+    def _clear_keepalive_policies(self):
+        """Remove every keepalive policy that can hold the motors off.
+
+        The tablet registers a "motors off on comms loss" policy; once it hands control over, that
+        policy refuses power-on (KeepaliveMotorsOffError). This process takes control
+        unconditionally, so any such policy, stale or live, is removed.
+        """
+        from bosdyn.client.keepalive import KeepaliveClient
+
+        client = self.robot.ensure_client(KeepaliveClient.default_service_name)
+        blocking = []
+        for live in client.get_status().status:
+            if any(
+                a.HasField('controlled_motors_off') or a.HasField('immediate_robot_off')
+                for a in live.policy.actions
+            ):
+                blocking.append(live.policy_id)
+                print(f'Removing keepalive policy {live.policy.name or live.policy_id!r}')
+        if blocking:
+            client.modify_policy(policy_ids_to_remove=blocking)
 
     def _setup_estop(self, estop_client):
         """Register this process as the e-stop endpoint and wait for the stop to clear."""

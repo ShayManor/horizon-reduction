@@ -248,8 +248,8 @@ def run_session(root, hostname, make_client, input_fn=input, print_fn=print, lau
         f'Running the arms in the background (runner pid {pid}).\n'
         f'  Logs:    {os.path.join(root, "logs")}/{{runner,sharsa,dual,phys,geo}}.log\n'
         f'  Status:  {path}\n'
-        f'  Stop:    kill -INT -- -{pid}   (each arm saves its buffer and weights first)\n'
-        f'  Resume:  python main.py, then answer r'
+        f'  Stop:    spot stop   (the running arm saves its buffer and weights first)\n'
+        f'  Resume:  spot, then answer r'
     )
     return session
 
