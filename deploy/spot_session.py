@@ -122,7 +122,7 @@ def run_arms(root, popen=subprocess.Popen, print_fn=print):
     session = load_session(path)
     session['runner_pid'] = os.getpid()
     save_session(path, session)
-    online_steps = int(os.environ.get('SPOT_ONLINE_STEPS', 18000))
+    online_steps = int(os.environ.get('SPOT_ONLINE_STEPS') or 18000)
     os.makedirs(os.path.join(root, 'logs'), exist_ok=True)
     for arm in session['arms']:
         record = session['runs'][arm]
@@ -248,7 +248,7 @@ def run_session(root, hostname, make_client, input_fn=input, print_fn=print, lau
         f'Running the arms in the background (runner pid {pid}).\n'
         f'  Logs:    {os.path.join(root, "logs")}/{{runner,sharsa,dual,phys,geo}}.log\n'
         f'  Status:  {path}\n'
-        f'  Stop:    spot stop   (the running arm saves its buffer and weights first)\n'
+        f'  Stop:    Ctrl+C here, or spot stop   (the running arm saves its buffer and weights first)\n'
         f'  Resume:  spot, then answer r'
     )
     return session

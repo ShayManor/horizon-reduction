@@ -213,6 +213,30 @@ def wait_for_control(client, resume_path, sleep_fn=time.sleep, print_fn=print, p
     client.acquire()
 
 
+def retake_control(client, sleep_fn=time.sleep, print_fn=print, retry=2.0):
+    """Take the robot straight back after a lease or e-stop loss. Retries until `acquire` succeeds.
+
+    Training owns the robot: whoever took it (the tablet included) loses it again within seconds.
+    Stop a run with Ctrl+C or `spot stop`, not by taking control.
+    """
+    while True:
+        for name in ('_lease_keepalive', '_estop_keepalive'):
+            keepalive = getattr(client, name, None)
+            if keepalive is not None:
+                try:
+                    keepalive.shutdown()
+                except Exception:  # noqa: BLE001 - a dead keepalive is what we are replacing
+                    pass
+                setattr(client, name, None)
+        try:
+            client.acquire()
+            print_fn('control retaken')
+            return
+        except Exception as exc:  # noqa: BLE001 - keep trying until the robot is ours
+            print_fn(f'retaking control failed ({type(exc).__name__}: {exc}); retrying in {retry:.0f} s')
+            sleep_fn(retry)
+
+
 class MaplessSpotEnv(SpotMazeEnv):
     """Reset-free Spot navigation in the run frame. One episode is one goal attempt.
 

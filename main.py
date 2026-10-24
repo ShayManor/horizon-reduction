@@ -174,7 +174,7 @@ def train_online(config):
     task_ids = None if FLAGS.task_ids is None else [int(t) for t in FLAGS.task_ids]
     ab = FLAGS.mapless and FLAGS.goal_mode == 'ab'
     if FLAGS.mapless:
-        from envs.spot_mapless import ABGoals, GoalSampler, RunFrame, wait_for_control
+        from envs.spot_mapless import ABGoals, GoalSampler, RunFrame, retake_control
         from utils.online_metrics import OnlineMetrics
         from utils.value_query import goal_values
 
@@ -279,7 +279,7 @@ def train_online(config):
                     f'Pose jump at env step {env_step}: odometry reset or the robot was carried. Return Spot '
                     f'to the start mark and resume with --restore_epoch={env_step}.'
                 )
-            wait_for_control(env.client, os.path.join(FLAGS.save_dir, 'RESUME'))
+            retake_control(env.client)
 
     def store_transition(ob, action, next_ob, terminal, info, ep_steps):
         if FLAGS.mapless and info['jump']:
