@@ -140,7 +140,9 @@ def run_arms(root, popen=subprocess.Popen, print_fn=print):
         print_fn(f'=== {arm}: {" ".join(cmd)}\n    log: {log_path}', flush=True)
         stopped = False
         with open(log_path, 'a') as log:
-            proc = popen(cmd, cwd=REPO, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+            env = dict(os.environ, SPOT_ARM=arm, SPOT_ARM_INDEX=str(session['arms'].index(arm)),
+                       SPOT_ARM_COUNT=str(len(session['arms'])))
+            proc = popen(cmd, cwd=REPO, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, env=env)
             while True:
                 try:
                     code = proc.wait()

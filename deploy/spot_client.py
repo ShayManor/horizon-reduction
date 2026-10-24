@@ -140,11 +140,10 @@ class SpotClient:
         try:
             self._setup_estop(estop_client)
         except MotorsOnError:
-            # Motors were left on, and the e-stop config cannot be rewritten in that state.
-            # Powering down needs the lease, so take it, sit the robot, and set the e-stop up.
-            lease_client.take()
-            self.robot.power_off(cut_immediately=False, timeout_sec=20)
-            self._setup_estop(estop_client)
+            # Motors are on (the operator walked Spot over with the tablet), and the robot refuses an
+            # e-stop config change in that state. Rewriting it would mean powering off, i.e. sitting
+            # Spot down at every handover, so the current e-stop (the tablet's) is kept as is.
+            print('motors already on: keeping the current e-stop configuration')
 
         try:
             self._lease_keepalive = LeaseKeepAlive(

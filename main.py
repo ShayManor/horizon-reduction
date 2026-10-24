@@ -160,6 +160,27 @@ def mapless_start_pose():
     return [mark['x'], mark['y'], mark['yaw']]
 
 
+def arm_progress_bar(env_step):
+    """One bar per arm, warmup included, labelled with the arm and its place in the session."""
+    arm = os.environ.get('SPOT_ARM', 'arm')
+    index, count = int(os.environ.get('SPOT_ARM_INDEX', 0)), int(os.environ.get('SPOT_ARM_COUNT', 1))
+    return tqdm.tqdm(
+        total=FLAGS.online_steps, initial=env_step, desc=f'{arm} ({index + 1}/{count})', dynamic_ncols=True,
+        smoothing=0.1, bar_format='{desc} {percentage:3.0f}%|{bar}| {n}/{total} [{elapsed}<{remaining}]{postfix}',
+    )
+
+
+def advance_bar(bar, env_step, phase):
+    """Move the arm bar to `env_step` and show the phase and the whole session's progress."""
+    bar.update(env_step - bar.n)
+    index, count = int(os.environ.get('SPOT_ARM_INDEX', 0)), int(os.environ.get('SPOT_ARM_COUNT', 1))
+    done = index * FLAGS.online_steps + env_step
+    total = count * FLAGS.online_steps
+    rate = bar.format_dict.get('rate') or 0.0
+    left = f', ~{(total - done) / rate / 60:.0f} min left' if rate > 0 else ''
+    bar.set_postfix_str(f'{phase} | session {100 * done / total:.0f}%{left}', refresh=False)
+
+
 def train_online(config):
     """Train on the robot: step it, fill the buffer, update, repeat.
 
@@ -389,6 +410,7 @@ def train_online(config):
         # actions and costs nothing, then uniform random actions fill the rest.
         # A restored run skips it, except a mapless one that a pose jump stopped short of warmup.
         do_warmup = FLAGS.restore_path is None or FLAGS.mapless
+        bar = arm_progress_bar(env_step) if FLAGS.mapless else None
         while do_warmup and (
             (FLAGS.restore_path is None and episode_idx == 0)
             or episode_idx < FLAGS.seed_episodes
@@ -412,6 +434,8 @@ def train_online(config):
                 store_transition(ob, action, next_ob, float(terminated or truncated), info, ep_steps)
                 log_step(info, terminated, truncated)
                 ob = next_ob
+                if bar is not None:
+                    advance_bar(bar, env_step, 'warmup')
                 if FLAGS.mapless and env_step % FLAGS.log_interval == 0:
                     warmup_metrics = dict(mapless_metrics(), **{'buffer/size': buffer.size})
                     wandb.log(warmup_metrics, step=env_step)
@@ -444,7 +468,9 @@ def train_online(config):
         start_step, ep_steps = env_step, 0
 
         remaining = online_step_range(env_step, seeded_steps, FLAGS.online_steps)
-        for env_step in tqdm.tqdm(remaining, smoothing=0.1, dynamic_ncols=True):
+        for env_step in remaining if bar is not None else tqdm.tqdm(remaining, smoothing=0.1, dynamic_ncols=True):
+            if bar is not None:
+                advance_bar(bar, env_step, 'train')
             # The acting policy is the agent's own sampling. SHARSA's flow actor ignores
             # `temperature`; exploration is the noise the flow starts from, reseeded every step.
             if FLAGS.mapless:
