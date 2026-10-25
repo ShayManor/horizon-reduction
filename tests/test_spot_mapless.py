@@ -946,7 +946,7 @@ def test_session_retries_tag_saves_tag_frame_poses_and_queues_arms(tmp_path):
     assert np.allclose(saved['end_tag'][:2], (3.0, 0.0), atol=1e-9)
     assert np.allclose(saved['start_tag'][:2], (0.5, 0.0), atol=1e-9)
     assert saved['tag_id'] == 7 and saved['tag_pose'] == [2.0, 1.0, math.pi / 2] and session['arms'] == list(ARMS)
-    assert launched == [str(tmp_path)] and list(ARMS) == ['sharsa', 'dual', 'phys', 'geo']
+    assert launched == [str(tmp_path)] and list(ARMS) == ['phys', 'sharsa', 'dual', 'geo']
 
 
 def _write_checkpoint(run_dir, step, params=True):

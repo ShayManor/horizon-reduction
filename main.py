@@ -68,6 +68,7 @@ flags.DEFINE_list('start_pose', None, 'Mapless sim only: seed-frame x,y,yaw. Def
 flags.DEFINE_string('warm_start_path', None, 'Mapless: run dir of a checkpoint to copy --warm_start_modules from.')
 flags.DEFINE_integer('warm_start_epoch', None, 'Mapless: step of the warm-start checkpoint.')
 flags.DEFINE_list('warm_start_modules', ['low_actor_flow'], 'Mapless: modules copied from the warm start.')
+flags.DEFINE_float('explore_p', 0.0, 'Mapless, warm-started: chance each high-level decision is a random subgoal.')
 flags.DEFINE_bool('async_updates', False, 'Mapless: run updates in a learner thread, off the control loop.')
 flags.DEFINE_integer('log_interval', 10000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 250000, 'Evaluation interval.')
@@ -553,6 +554,7 @@ def train_online(config):
         first_act = first_update = True
         last_time = time.time()
         update_info = {}
+        explore_subgoal = None
         task_idx = episode_idx % num_tasks
         # The loop's first goal is picked without V: a resumed session has no observation to value
         # it from.
@@ -569,7 +571,16 @@ def train_online(config):
                 advance_bar(bar, env_step, 'train')
             # The acting policy is the agent's own sampling. SHARSA's flow actor ignores
             # `temperature`; exploration is the noise the flow starts from, reseeded every step.
-            if FLAGS.mapless:
+            if walker is not None and env_step % config['subgoal_steps'] == 0:
+                # HAC (Levy et al., ICLR 2019): with probability 0.2 a high-level decision is a uniformly random
+                # subgoal, held for one subgoal period. Drawn as in warmup, relative to the robot: no map exists.
+                explore_subgoal = None
+                if walk_rng.random() < FLAGS.explore_p:
+                    angle, dist = walk_rng.uniform(-np.pi, np.pi), walk_rng.uniform(0.5, 2.0)
+                    explore_subgoal = ob[:2] + dist * np.array([np.cos(angle), np.sin(angle)], np.float32)
+            if explore_subgoal is not None:
+                action, act_ms = walker(ob, explore_subgoal), None
+            elif FLAGS.mapless:
                 act_start = time.perf_counter()
                 action = np.array(jax.block_until_ready(actor_fn(observations=ob, goals=goal)))
                 # The process's first call includes XLA compile time, which is not per-decision latency.

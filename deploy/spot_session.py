@@ -26,7 +26,7 @@ import numpy as np
 from envs.spot_mapless import RunFrame
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ARMS = ('sharsa', 'dual', 'phys', 'geo')
+ARMS = ('phys', 'sharsa', 'dual', 'geo')
 ARM_FLAGS = {
     'sharsa': ['--agent=agents/sharsa.py'],
     'dual': [
@@ -47,7 +47,7 @@ POSE_JUMP_EXIT = 3  # main.py exits with this when the run frame is lost; retryi
 RETRIES = 3  # resumes of an arm that exits non-zero (an SDK or network error), 10 s apart, before the next arm
 COMMON_FLAGS = [
     f'--warmup_steps={WARMUP_STEPS}', '--save_interval=1000', '--log_interval=250', '--max_episode_steps=300',
-    '--buffer_size=200000', '--seed=1', '--env_name=spot-ab-v0',
+    '--buffer_size=200000', '--seed=1', '--env_name=spot-ab-v0', '--explore_p=0.2',
     '--agent.gc_negative=True', '--agent.value_loss_type=squared', '--agent.subgoal_steps=10',
     '--agent.batch_size=256',
 ]  # fmt: skip
