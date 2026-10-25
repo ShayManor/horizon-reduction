@@ -283,13 +283,19 @@ class SpotClient:
 
     def send_velocity(self, vx, vy, wz, duration=None):
         """Issue one body-frame velocity command."""
-        from bosdyn.client.robot_command import RobotCommandBuilder
+        from bosdyn.client.robot_command import ExpiredError, RobotCommandBuilder
 
         duration = 2.0 * self.control_period if duration is None else duration
         command = RobotCommandBuilder.synchro_velocity_command(
             v_x=vx, v_y=vy, v_rot=wz, params=self.mobility_params
         )
-        self.command_client.robot_command(command, end_time_secs=time.time() + duration)
+        try:
+            self.command_client.robot_command(command, end_time_secs=time.time() + duration)
+        except ExpiredError:
+            # The robot's clock moved (it does after a boot), so the cached offset is stale: resync, resend.
+            print('velocity command expired on arrival: resyncing the robot clock', flush=True)
+            self.robot.time_sync.endpoint.establish_timesync(break_on_success=True)
+            self.command_client.robot_command(command, end_time_secs=time.time() + duration)
         self._nav_cmd_id = None
 
     def stop(self):
