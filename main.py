@@ -553,21 +553,25 @@ def train_online(config):
         # A resumed arm first walks back to where it stopped, so being carried or walked elsewhere between
         # sessions (to see the tag, to swap a battery) cannot move it toward its goal. Nothing is stored or
         # counted: the frozen walker heads at the saved pose, at most 1.5 m ahead, for up to 60 s.
-        stopped = glob.glob(os.path.join(FLAGS.restore_path or '', 'steps.csv'))
-        if FLAGS.mapless and walker is not None and stopped:
-            with open(stopped[0]) as f:
-                rows = [r for r in csv.DictReader(f) if r['jump'] != 'True']
+        # Every run dir of this arm counts: a resume that crashed before its first step leaves an empty log.
+        stopped = glob.glob(os.path.join(os.path.dirname(FLAGS.save_dir), '*', 'steps.csv'))
+        if FLAGS.mapless and walker is not None and FLAGS.restore_path and stopped:
+            rows = []
+            for path in stopped:
+                with open(path) as f:
+                    rows += [r for r in csv.DictReader(f) if r['jump'] != 'True']
+            rows.sort(key=lambda r: int(r['step']))
             if rows:
                 target = np.array([float(rows[-1]['x']), float(rows[-1]['y'])], np.float32)
                 ob, info = env.reset(options=dict(goal=target))
                 print(f'walking back to where the arm stopped: {target.round(2).tolist()}', flush=True)
                 for _ in range(600):
                     gap = target - ob[:2]
-                    if np.hypot(*gap) <= FLAGS.goal_tol or info['jump']:
+                    if np.hypot(*gap) <= FLAGS.goal_tol or info.get('jump'):
                         break
                     subgoal = ob[:2] + gap * min(1.0, 1.5 / np.hypot(*gap))
                     ob, _, _, truncated, info = env.step(walker(ob, subgoal))
-                    if truncated and not info['jump']:
+                    if truncated and not info.get('jump'):
                         ob, info = env.reset(options=dict(goal=target))
                 print(f'back within {np.hypot(*(target - ob[:2])):.2f} m of it', flush=True)
                 env._stop()

@@ -106,7 +106,11 @@ def _pid_alive(pid):
         os.kill(pid, 0)
     except (OSError, TypeError):
         return False
-    return True
+    try:  # after a reboot the saved pid can belong to an unrelated process: only a runner counts
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            return b'spot_session' in f.read()
+    except OSError:  # no /proc (macOS): trust the signal check
+        return True
 
 
 def _complete(run_dir, step):
