@@ -1,3 +1,4 @@
+import csv
 import glob
 import json
 import os
@@ -548,6 +549,28 @@ def train_online(config):
         if FLAGS.async_updates:  # compile the actor now, so the first actions do not wait on XLA
             zeros = np.zeros(env.observation_space.shape, env.observation_space.dtype)
             jax.block_until_ready(actor_fn(observations=zeros, goals=np.zeros(GOAL_SLICE, np.float32)))
+
+        # A resumed arm first walks back to where it stopped, so being carried or walked elsewhere between
+        # sessions (to see the tag, to swap a battery) cannot move it toward its goal. Nothing is stored or
+        # counted: the frozen walker heads at the saved pose, at most 1.5 m ahead, for up to 60 s.
+        stopped = glob.glob(os.path.join(FLAGS.restore_path or '', 'steps.csv'))
+        if FLAGS.mapless and walker is not None and stopped:
+            with open(stopped[0]) as f:
+                rows = [r for r in csv.DictReader(f) if r['jump'] != 'True']
+            if rows:
+                target = np.array([float(rows[-1]['x']), float(rows[-1]['y'])], np.float32)
+                ob, info = env.reset(options=dict(goal=target))
+                print(f'walking back to where the arm stopped: {target.round(2).tolist()}', flush=True)
+                for _ in range(600):
+                    gap = target - ob[:2]
+                    if np.hypot(*gap) <= FLAGS.goal_tol or info['jump']:
+                        break
+                    subgoal = ob[:2] + gap * min(1.0, 1.5 / np.hypot(*gap))
+                    ob, _, _, truncated, info = env.step(walker(ob, subgoal))
+                    if truncated and not info['jump']:
+                        ob, info = env.reset(options=dict(goal=target))
+                print(f'back within {np.hypot(*(target - ob[:2])):.2f} m of it', flush=True)
+                env._stop()
 
         # -- training loop ----------------------------------------------------------------------
         first_time = time.time()
