@@ -36,6 +36,8 @@ ARMS = dict(
         'agents/sharsa_geodesic.py',
         dict(use_anisotropic=False, w_geo=1.0, use_fk_loss=False, basic_smoothing=False, cost_dims=2),
     ),
+    ntfields=('agents/ntfields.py', {}),
+    ipp=('agents/ipp.py', {}),
 )
 
 flags.DEFINE_list('agents', list(ARMS), f'Arms to time, from {list(ARMS)}.')

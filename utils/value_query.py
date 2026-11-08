@@ -58,7 +58,9 @@ def _subgoal(agent, observation, goal, seed, dual):
 
 def select_subgoal(agent, observation, goal, seed):
     """The subgoal `sample_actions` would hand its low-level policy for (observation, goal), as (2,)."""
-    dual = agent.config['agent_name'] == 'sharsa_dual'
     observation = jnp.asarray(observation, dtype=jnp.float32)
     goal = jnp.asarray(goal, dtype=jnp.float32)
+    if hasattr(agent, 'select_subgoal'):
+        return np.asarray(agent.select_subgoal(observation, goal, seed))
+    dual = agent.config['agent_name'] == 'sharsa_dual'
     return np.asarray(_subgoal(agent, observation, goal, seed, dual))

@@ -95,3 +95,9 @@ run_arm phys agents/sharsa.py \
 run_arm geo agents/sharsa_geodesic.py \
   --agent.use_anisotropic=False --agent.w_geo=1.0 --agent.use_fk_loss=False \
   --agent.basic_smoothing=False --agent.cost_dims=2
+
+# (e) Pure Active NTFields (first-order Eikonal PDE + gradient-ascent subgoals)
+run_arm ntfields agents/ntfields.py
+
+# (f) Classical Grid IPP (occupancy/frontier info-gain - Dijkstra cost + Dijkstra lookahead)
+run_arm ipp agents/ipp.py

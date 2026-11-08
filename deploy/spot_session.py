@@ -1,4 +1,4 @@
-"""Guided one-command Spot session (spec section 11): tag, end, start, then the four arms, detached.
+"""Guided one-command Spot session (spec section 11): tag, end, start, then the six arms, detached.
 
 `python main.py` with no arguments runs `main()`; `python main.py --spot_sim` runs it against the sim.
 The session connects without the lease, so the operator drives with the tablet during setup. Poses
@@ -26,7 +26,7 @@ import numpy as np
 from envs.spot_mapless import RunFrame
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ARMS = ('phys', 'sharsa', 'dual', 'geo')
+ARMS = ('phys', 'sharsa', 'dual', 'geo', 'ntfields', 'ipp')
 ARM_FLAGS = {
     'sharsa': ['--agent=agents/sharsa.py'],
     'dual': [
@@ -41,6 +41,8 @@ ARM_FLAGS = {
         '--agent=agents/sharsa_geodesic.py', '--agent.use_anisotropic=False', '--agent.w_geo=1.0',
         '--agent.kappa=16.7', '--agent.use_fk_loss=False', '--agent.basic_smoothing=False', '--agent.cost_dims=2',
     ],
+    'ntfields': ['--agent=agents/ntfields.py'],
+    'ipp': ['--agent=agents/ipp.py'],
 }  # fmt: skip
 WARMUP_STEPS = 1000
 POSE_JUMP_EXIT = 3  # main.py exits with this when the run frame is lost; retrying could not recover it
@@ -365,6 +367,10 @@ def run_session(root, hostname, make_client, input_fn=input, print_fn=print, lau
             if why is not None:
                 print_fn(why)
                 return None
+            for arm in ARMS:
+                if arm not in session['arms']:
+                    session['arms'].append(arm)
+                session['runs'].setdefault(arm, dict(status='pending', run_dirs=[]))
         else:
             old_dir = os.path.join(root, 'old_' + datetime.datetime.now().strftime('%Y%m%d_%H%M%S'))
             os.makedirs(old_dir)
@@ -416,7 +422,7 @@ def run_session(root, hostname, make_client, input_fn=input, print_fn=print, lau
     pid = launch_fn(root)
     print_fn(
         f'Running the arms in the background (runner pid {pid}).\n'
-        f'  Logs:    {os.path.join(root, "logs")}/{{runner,sharsa,dual,phys,geo}}.log\n'
+        f'  Logs:    {os.path.join(root, "logs")}/{{runner,phys,sharsa,dual,geo,ntfields,ipp}}.log\n'
         f'  Status:  {path}\n'
         f'  Stop:    Ctrl+C here, or spot stop   (the running arm saves its buffer and weights first)\n'
         f'  Resume:  spot, then answer r'
@@ -442,7 +448,7 @@ def main(sim=False):
             client.connect()  # no lease: the operator drives with the tablet during setup
             return client
 
-    print('Spot session: face the AprilTag, mark the END, mark the START, then the four arms run on their own.')
+    print('Spot session: face the AprilTag, mark the END, mark the START, then the six arms run on their own.')
     run_session(os.path.abspath(root), hostname, make_client, sim=sim, pretrain_fn=pretrain_walk)
 
 

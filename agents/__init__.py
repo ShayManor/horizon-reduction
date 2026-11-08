@@ -6,7 +6,9 @@ from agents.gciql import GCIQLAgent
 from agents.gcsacbc import GCSACBCAgent
 from agents.hgcfbc import HGCFBCAgent
 from agents.hiql import HIQLAgent
+from agents.ipp import IPPAgent
 from agents.ngcsacbc import NGCSACBCAgent
+from agents.ntfields import NTFieldsAgent
 from agents.sharsa import SHARSAAgent
 from agents.sharsa_dual import SHARSADualAgent
 from agents.sharsa_geodesic import SHARSAGeodesicAgent
@@ -20,7 +22,9 @@ agents = dict(
     gcsacbc=GCSACBCAgent,
     hgcfbc=HGCFBCAgent,
     hiql=HIQLAgent,
+    ipp=IPPAgent,
     ngcsacbc=NGCSACBCAgent,
+    ntfields=NTFieldsAgent,
     sharsa=SHARSAAgent,
     sharsa_dual=SHARSADualAgent,
     sharsa_geodesic=SHARSAGeodesicAgent,

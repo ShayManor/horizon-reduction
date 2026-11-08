@@ -27,9 +27,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 SR_MIN, COVERAGE_MIN = 0.8, 0.9  # mapping thresholds
-ARMS = ['sharsa', 'dual', 'phys', 'geo']
-COLORS = {'sharsa': '#4c78a8', 'dual': '#f58518', 'phys': '#54a24b', 'geo': '#b279a2'}
-SPARE = ['#e45756', '#72b7b2', '#9d755d', '#bab0ac']  # arms outside ARMS, in order of appearance
+ARMS = ['sharsa', 'dual', 'phys', 'geo', 'ntfields', 'ipp']
+COLORS = {
+    'sharsa': '#4c78a8',
+    'dual': '#f58518',
+    'phys': '#54a24b',
+    'geo': '#b279a2',
+    'ntfields': '#e45756',
+    'ipp': '#72b7b2',
+}
+SPARE = ['#9d755d', '#bab0ac']  # arms outside ARMS, in order of appearance
 SNAPSHOT_STEPS = (2000, 5000)  # plus the final checkpoint
 HEADINGS = np.arange(8) * math.pi / 4
 MAX_CELLS = 6000  # grid cells V is evaluated on per snapshot

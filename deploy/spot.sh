@@ -66,5 +66,5 @@ echo "Following the logs. Ctrl+C stops Spot; closing the terminal leaves it runn
 trap stop_all INT
 # An explicit list, as deploy/spot_session.py names them: -F waits for the arm logs that do not exist yet.
 LOGS="$ROOT/logs/runner.log"
-for ARM in sharsa dual phys geo; do LOGS="$LOGS $ROOT/logs/$ARM.log"; done
+for ARM in phys sharsa dual geo ntfields ipp; do LOGS="$LOGS $ROOT/logs/$ARM.log"; done
 sudo docker exec "$NAME" sh -c "tail -n 5 -F $LOGS"

@@ -8,7 +8,13 @@ os.environ.setdefault('JAX_PLATFORMS', 'cpu')
 import numpy as np
 import pytest
 
-AGENT_FILES = ['agents/sharsa.py', 'agents/sharsa_dual.py', 'agents/sharsa_geodesic.py']
+AGENT_FILES = [
+    'agents/sharsa.py',
+    'agents/sharsa_dual.py',
+    'agents/sharsa_geodesic.py',
+    'agents/ntfields.py',
+    'agents/ipp.py',
+]
 
 
 def test_time_agent_reports_every_field():
@@ -946,7 +952,7 @@ def test_session_retries_tag_saves_tag_frame_poses_and_queues_arms(tmp_path):
     assert np.allclose(saved['end_tag'][:2], (3.0, 0.0), atol=1e-9)
     assert np.allclose(saved['start_tag'][:2], (0.5, 0.0), atol=1e-9)
     assert saved['tag_id'] == 7 and saved['tag_pose'] == [2.0, 1.0, math.pi / 2] and session['arms'] == list(ARMS)
-    assert launched == [str(tmp_path)] and list(ARMS) == ['phys', 'sharsa', 'dual', 'geo']
+    assert launched == [str(tmp_path)] and list(ARMS) == ['phys', 'sharsa', 'dual', 'geo', 'ntfields', 'ipp']
 
 
 def _write_checkpoint(run_dir, step, params=True):
@@ -1212,6 +1218,9 @@ def test_session_resume_keeps_poses_and_new_moves_old_dir(tmp_path):
     s = load_session(os.path.join(root, 'session.json'))
     assert client.calls == [7] and s['end_tag'] == [3.0, 0.0, 0.0] and s['tag_pose'] == [2.0, 1.0, math.pi / 2]
     assert not any('END' in p for p in prompts) and os.path.isdir(os.path.join(root, 'runs', 'sharsa'))
+    assert set(s['arms']) >= {'phys', 'sharsa', 'dual', 'geo', 'ntfields', 'ipp'}
+    assert s['runs']['sharsa']['status'] == 'running'
+    assert s['runs']['ntfields']['status'] == 'pending' and s['runs']['ipp']['status'] == 'pending'
 
     client = _SessionClient(misses=0)
     client.poses = [(2.0, 4.0, 0.0), (2.0, 1.5, 0.0)]
@@ -1329,6 +1338,7 @@ def test_restore_modules_copies_only_named_modules(tmp_path, agent_file):
     from utils.flax_utils import restore_modules, save_agent
 
     a, b = _two_agents(agent_file)
+    a, _ = a.update(synthetic_batch(8))
     save_agent(a, str(tmp_path), 7)
     c = restore_modules(b, str(tmp_path), 7, ['low_actor_flow'])
     leaves = jax.tree_util.tree_leaves
@@ -1336,7 +1346,7 @@ def test_restore_modules_copies_only_named_modules(tmp_path, agent_file):
     p, pa, pb = c.network.params, a.network.params, b.network.params
     assert 'modules_target_low_actor_flow' not in p  # SHARSA keeps no target for the low-level actor
     assert same(p['modules_low_actor_flow'], pa['modules_low_actor_flow'])
-    for key in ('modules_high_value', 'modules_high_critic', 'modules_target_high_value', 'modules_high_actor_flow'):
+    for key in set(pb) - {'modules_low_actor_flow'}:
         assert same(p[key], pb[key]) and not same(p[key], pa[key]), key
     c.update(synthetic_batch(8))  # the copied params keep the fresh optimizer state's structure
 
@@ -1457,7 +1467,7 @@ def test_session_offers_walk_pretrain_and_arms_get_the_warm_start(tmp_path):
     offer_walk_pretrain(root, input_fn, lambda *a, **k: None, pretrain)
     assert made == [root] and len(prompts) == 2 and '[c]reate' in prompts[0]
     run = str(tmp_path / WALK_DIR / 'runs' / 'p' / 'g' / 'e')
-    for arm in ('sharsa', 'dual', 'phys', 'geo'):
+    for arm in ('sharsa', 'dual', 'phys', 'geo', 'ntfields', 'ipp'):
         cmd = arm_command(root, arm, 'sim', 100, restore=('/r', 1000), warm_start=f'{run}/params_10000.pkl')
         assert cmd[-4:] == [f'--warm_start_path={run}', '--warm_start_epoch=10000',
                             '--warm_start_modules=low_actor_flow', '--agent.freeze_low_actor=True']
