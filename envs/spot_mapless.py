@@ -1,6 +1,7 @@
 """Mapless Spot pieces: the run frame, the frontier goal sampler and the reset-free env. No SDK."""
 import math
 import os
+import socket
 import time
 from collections import deque
 
@@ -189,6 +190,40 @@ def _is_intervention(exc):
     return any(k in name for k in ('Lease', 'Estop', 'EStop', 'NotPoweredOn'))
 
 
+def _is_link_loss(exc):
+    # The Jetson-Spot Ethernet dropping or unplugged: the SDK's retryable RPC errors (timeouts, unreachable,
+    # connection reset) and the time sync that lapses with them. Matched through the MRO by name, as above.
+    names = {c.__name__ for c in type(exc).__mro__}
+    return bool(names & {'RetryableRpcError', 'TimeSyncRequired', 'NoTimeSyncError'})
+
+
+def wait_for_link(hostname, steady_s=20.0, port=443, probe=None, sleep_fn=time.sleep, print_fn=print, poll=0.5,
+                  report_every=10.0):  # fmt: skip
+    """Block until Spot's API port accepts a connection on every poll for `steady_s` seconds.
+
+    The link flaps in bursts, so one good probe does not mean it is back. Unplugging and replugging the
+    Ethernet during the wait is safe: every failed probe restarts the count.
+    """
+    if probe is None:
+
+        def probe():
+            try:
+                socket.create_connection((hostname, port), timeout=1.0).close()
+                return True
+            except OSError:
+                return False
+
+    good, waited, next_report = 0.0, 0.0, 0.0
+    while good < steady_s:
+        if waited >= next_report:
+            print_fn(f'waiting for the link to Spot ({waited:.0f} s): steady for {good:.0f}/{steady_s:.0f} s')
+            next_report += report_every
+        good = good + poll if probe() else 0.0
+        sleep_fn(poll)
+        waited += poll
+    print_fn(f'link to Spot steady for {steady_s:.0f} s')
+
+
 def wait_for_control(client, resume_path, sleep_fn=time.sleep, print_fn=print, poll=1.0, report_every=10.0):
     """Block after a lease or e-stop intervention until the operator creates `resume_path`, then take control.
 
@@ -213,13 +248,16 @@ def wait_for_control(client, resume_path, sleep_fn=time.sleep, print_fn=print, p
     client.acquire()
 
 
-def retake_control(client, sleep_fn=time.sleep, print_fn=print, retry=2.0):
+def retake_control(client, sleep_fn=time.sleep, print_fn=print, retry=2.0, link_lost=False, link_fn=wait_for_link):
     """Take the robot straight back after a lease or e-stop loss. Retries until `acquire` succeeds.
 
     Training owns the robot: whoever took it (the tablet included) loses it again within seconds.
-    Stop a run with Ctrl+C or `spot stop`, not by taking control.
+    Stop a run with Ctrl+C or `spot stop`, not by taking control. After a link loss, every attempt
+    first waits for a steady link, so a flapping cable cannot burn the attempt on a momentary reconnect.
     """
     while True:
+        if link_lost:
+            link_fn(client.hostname, sleep_fn=sleep_fn, print_fn=print_fn)
         for name in ('_lease_keepalive', '_estop_keepalive'):
             keepalive = getattr(client, name, None)
             if keepalive is not None:
@@ -234,6 +272,7 @@ def retake_control(client, sleep_fn=time.sleep, print_fn=print, retry=2.0):
             return
         except Exception as exc:  # noqa: BLE001 - keep trying until the robot is ours
             print_fn(f'retaking control failed ({type(exc).__name__}: {exc}); retrying in {retry:.0f} s')
+            link_lost = link_lost or _is_link_loss(exc)
             sleep_fn(retry)
 
 
@@ -242,7 +281,7 @@ class MaplessSpotEnv(SpotMazeEnv):
 
     The first `reset` fixes the run frame at the current pose, unless `frame` (a RunFrame, e.g. the
     AprilTag's) is given; later resets keep it and start from wherever the robot stands. Episodes end as 'reached', 'timeout', 'stuck' (under `stuck_dist` of
-    net displacement over `stuck_window` steps), or 'intervention' (lease or e-stop lost, or a pose
+    net displacement over `stuck_window` steps), or 'intervention' (lease, e-stop or link lost, or a pose
     jump over `jump_dist` in one step, which is odometry resetting or the robot being carried).
     """
 
@@ -273,6 +312,7 @@ class MaplessSpotEnv(SpotMazeEnv):
         # The reset pose plus `stuck_window` steps, so the window spans `stuck_window` intervals.
         self._recent = deque(maxlen=stuck_window + 1)
         self._last_state = None
+        self.link_lost = False  # whether the last step's intervention was the link to Spot dropping
 
     def _run_state(self, state):
         state = dict(state)
@@ -323,8 +363,8 @@ class MaplessSpotEnv(SpotMazeEnv):
     def _stop(self):
         try:
             self.client.stop()
-        except Exception as exc:  # stopping without the lease raises the same error again
-            if not _is_intervention(exc):
+        except Exception as exc:  # stopping without the lease or the link raises the same error again
+            if not (_is_intervention(exc) or _is_link_loss(exc)):
                 raise
 
     def step(self, action):
@@ -335,9 +375,12 @@ class MaplessSpotEnv(SpotMazeEnv):
             self.client.send_velocity(vx, vy, wz)
             dt, started = self._wait()
             raw = self.client.get_state()
-        except Exception as exc:  # only lease and e-stop errors are caught
-            if not _is_intervention(exc):
+        except Exception as exc:  # only lease, e-stop and link errors are caught
+            self.link_lost = _is_link_loss(exc)
+            if not (self.link_lost or _is_intervention(exc)):
                 raise
+            if self.link_lost:
+                print(f'link to Spot lost ({type(exc).__name__}): ending the episode to wait for it', flush=True)
         self.step_count += 1
 
         blocked, step_metres, jump = False, 0.0, False

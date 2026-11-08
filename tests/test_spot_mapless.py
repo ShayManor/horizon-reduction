@@ -291,6 +291,59 @@ def test_power_cut_by_estop_ends_episode_as_intervention():
     assert truncated and not terminated and info['outcome'] == 'intervention'
 
 
+def test_link_loss_ends_episode_as_intervention_even_when_the_stop_fails_too():
+    env, c = _mapless_env()
+    env.reset(options={'goal': np.array([5.0, 0.0])})
+
+    class RetryableRpcError(Exception):
+        pass
+
+    class TimedOutError(RetryableRpcError):
+        pass
+
+    def unplugged(*a, **k):
+        raise TimedOutError('Ethernet unplugged')
+
+    c.send_velocity = c.stop = unplugged
+    _, _, terminated, truncated, info = env.step(np.zeros(3))
+    assert truncated and not terminated and info['outcome'] == 'intervention' and env.link_lost
+
+
+def test_wait_for_link_restarts_the_count_on_every_dropped_probe():
+    from envs.spot_mapless import wait_for_link
+
+    # Up for 5 s, unplugged for 3 s, then replugged and steady.
+    probes = iter([True] * 10 + [False] * 6 + [True] * 100)
+    sleeps = []
+    wait_for_link('spot', steady_s=20.0, probe=lambda: next(probes), sleep_fn=sleeps.append, print_fn=lambda m: None)
+    assert len(sleeps) == 10 + 6 + 40
+
+
+def test_retake_control_waits_for_the_link_before_every_attempt_after_a_link_loss():
+    from envs.spot_mapless import retake_control
+
+    class RetryableRpcError(Exception):
+        pass
+
+    class Client:
+        hostname, acquires, _lease_keepalive, _estop_keepalive = 'spot', 0, None, None
+
+        def acquire(self):
+            self.acquires += 1
+            if self.acquires == 1:
+                raise RetryableRpcError('link dropped again mid-acquire')
+
+    waits = []
+    c = Client()
+    retake_control(c, sleep_fn=lambda s: None, print_fn=lambda m: None, link_lost=True,
+                   link_fn=lambda host, **k: waits.append(host))  # fmt: skip
+    assert c.acquires == 2 and waits == ['spot', 'spot']
+    c, waits = Client(), []
+    c.acquires = 1  # a tablet takeover: acquire succeeds at once, with no link wait
+    retake_control(c, sleep_fn=lambda s: None, print_fn=lambda m: None, link_fn=lambda host, **k: waits.append(host))
+    assert waits == []
+
+
 def test_blocked_proxy_thresholds():
     from envs.spot_mapless import is_blocked
 
@@ -483,6 +536,32 @@ def test_online_metrics_untimed_compile_call_counts_but_is_not_averaged():
     s = m.summary(dict(frontier_size=0, failed_cells=0, visited_cells=0), coverage=0.0)
     assert s['progress/updates'] == 1 and s['progress/env_steps'] == 1
     assert math.isnan(s['time/act_ms']) and math.isnan(s['time/update_ms'])
+
+
+def test_online_metrics_wall_time_excludes_waits_and_carries_across_resumes(monkeypatch):
+    from utils import online_metrics
+    from utils.online_metrics import OnlineMetrics
+
+    clock = [100.0]
+    monkeypatch.setattr(online_metrics.time, 'perf_counter', lambda: clock[0])
+    m = OnlineMetrics(control_period=0.1)
+    clock[0] = 160.0  # startup before the first step is not running time
+    step = dict(dt=0.1, step_metres=0.0, blocked=False, outcome='running')
+    m.on_step(step)
+    clock[0] = 260.0
+    m.exclude(40.0)  # an outage inside those 100 s
+    assert m.wall_time() == pytest.approx(60.0)
+    state = m.state_dict()
+    resumed = OnlineMetrics(control_period=0.1)
+    resumed.load_state_dict(state)
+    clock[0] = 900.0  # the restart, the compile and the walk back
+    assert resumed.wall_time() == pytest.approx(60.0)
+    resumed.on_step(step)
+    clock[0] = 910.0
+    assert resumed.wall_time() == pytest.approx(70.0)
+    legacy = OnlineMetrics(control_period=0.1)
+    legacy.load_state_dict({k: v for k, v in state.items() if k != 'wall_time'})
+    assert legacy.wall_time() == 0.0
 
 
 def test_mapless_train_online_runs_in_sim(tmp_path):
@@ -1113,6 +1192,32 @@ def test_runner_retries_a_failed_arm_from_its_checkpoint_then_moves_on(tmp_path,
     assert sum('why: TimedOutError: sharsa lost wifi' in line for line in lines) == 4
     s = load_session(str(tmp_path / 'session.json'))
     assert [s['runs'][a]['status'] for a in ('sharsa', 'dual')] == ['failed', 'done']
+
+
+def test_runner_on_the_robot_waits_for_the_link_and_only_stalled_failures_use_retries(tmp_path, monkeypatch):
+    from deploy.spot_session import load_session, run_arms, save_session
+
+    monkeypatch.setenv('SPOT_ONLINE_STEPS', '9000')
+    runs = {'sharsa': dict(status='pending', run_dirs=[])}
+    save_session(str(tmp_path / 'session.json'), dict(tag_id=0, hostname='192.168.50.3', arms=['sharsa'], runs=runs))
+    run = tmp_path / 'runs' / 'sharsa' / 'e1'
+    # Five link drops, each after another 1000 steps, then three stuck at 5000: progress resets the count.
+    saves, cmds, waits = [1000, 2000, 3000, 4000, 5000], [], []
+
+    class Proc:
+        def __init__(self, cmd, stdout, **kwargs):
+            cmds.append(cmd)
+            if saves:
+                _write_checkpoint(run, saves.pop(0))
+
+        def wait(self):
+            return 1
+
+    sleep = lambda s: pytest.fail('slept a fixed time on the robot instead of waiting for the link')  # noqa: E731
+    code = run_arms(str(tmp_path), popen=Proc, print_fn=lambda *a, **k: None, sleep_fn=sleep,
+                    link_fn=lambda host, **k: waits.append(host))  # fmt: skip
+    assert code == 1 and len(cmds) == 5 + 3 and waits == ['192.168.50.3'] * 7
+    assert load_session(str(tmp_path / 'session.json'))['runs']['sharsa']['status'] == 'failed'
 
 
 def test_runner_never_retries_an_interrupted_arm(tmp_path):

@@ -23,7 +23,7 @@ import zipfile
 
 import numpy as np
 
-from envs.spot_mapless import RunFrame
+from envs.spot_mapless import RunFrame, wait_for_link
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARMS = ('phys', 'sharsa', 'dual', 'geo', 'ntfields', 'ipp')
@@ -46,7 +46,7 @@ ARM_FLAGS = {
 }  # fmt: skip
 WARMUP_STEPS = 1000
 POSE_JUMP_EXIT = 3  # main.py exits with this when the run frame is lost; retrying could not recover it
-RETRIES = 3  # resumes of an arm that exits non-zero (an SDK or network error), 10 s apart, before the next arm
+RETRIES = 3  # resumes of an arm that exits non-zero without progressing (an SDK or network error) before the next arm
 COMMON_FLAGS = [
     f'--warmup_steps={WARMUP_STEPS}', '--save_interval=1000', '--log_interval=250', '--max_episode_steps=300',
     '--buffer_size=200000', '--seed=1', '--env_name=spot-ab-v0', '--explore_p=0.2',
@@ -241,12 +241,13 @@ def _last_line(log_path):
     return lines[-1] if lines else '(empty log)'
 
 
-def run_arms(root, popen=subprocess.Popen, print_fn=print, sleep_fn=time.sleep):
+def run_arms(root, popen=subprocess.Popen, print_fn=print, sleep_fn=time.sleep, link_fn=wait_for_link):
     """The detached runner: each unfinished arm in order, resuming from its last checkpoint.
 
-    An arm that exits non-zero is resumed up to `RETRIES` times, 10 s apart, then the runner moves to the
-    next arm. SIGINT to the process group (`kill -INT -- -PID`) reaches the arm too, which saves its buffer
-    and weights; the runner waits for that, then stops without a retry.
+    An arm that exits non-zero is resumed up to `RETRIES` times without progress, each once the link to
+    Spot is steady again (10 s apart in sim), then the runner moves to the next arm. SIGINT to the process
+    group (`kill -INT -- -PID`) reaches the arm too, which saves its buffer and weights; the runner waits for
+    that, then stops without a retry.
     """
     path = os.path.join(root, 'session.json')
     session = load_session(path)
@@ -257,13 +258,13 @@ def run_arms(root, popen=subprocess.Popen, print_fn=print, sleep_fn=time.sleep):
     session['runner_pid'] = os.getpid()
     save_session(path, session)
     try:
-        return _run_arms(root, path, session, popen, print_fn, sleep_fn)
+        return _run_arms(root, path, session, popen, print_fn, sleep_fn, link_fn)
     finally:  # a stale pid could later match an unrelated process in a recreated container
         session['runner_pid'] = None
         save_session(path, session)
 
 
-def _run_arms(root, path, session, popen, print_fn, sleep_fn):
+def _run_arms(root, path, session, popen, print_fn, sleep_fn, link_fn):
     online_steps = int(os.environ.get('SPOT_ONLINE_STEPS') or 18000)
     os.makedirs(os.path.join(root, 'logs'), exist_ok=True)
     failed = 0
@@ -271,10 +272,14 @@ def _run_arms(root, path, session, popen, print_fn, sleep_fn):
         record = session['runs'][arm]
         if record['status'] == 'done':
             continue
-        for attempt in range(RETRIES + 1):
-            if attempt:
+        attempt = 0
+        while attempt <= RETRIES:
+            if attempt and session['hostname'] == 'sim':
                 print_fn(f'=== {arm}: resuming in 10 s (retry {attempt}/{RETRIES})', flush=True)
                 sleep_fn(10)
+            elif attempt:  # the Ethernet may be out or being replugged: waiting for it is not a retry
+                print_fn(f'=== {arm}: resuming once the link to Spot is steady (retry {attempt}/{RETRIES})', flush=True)
+                link_fn(session['hostname'], sleep_fn=sleep_fn, print_fn=lambda m: print_fn(m, flush=True))
             clean_tmp(root, arm, print_fn)
             restore = latest_checkpoint(root, arm, print_fn)
             if restore is not None and restore[1] >= online_steps and _drained(*restore, online_steps):
@@ -315,9 +320,14 @@ def _run_arms(root, path, session, popen, print_fn, sleep_fn):
             if record['status'] == 'done':
                 break
             print_fn(f'    why: {_last_line(log_path)}', flush=True)
+            # A run that checkpointed further than it started (a link drop mid-run) restarts the count, so only
+            # failures that make no progress use up the retries.
+            after = latest_checkpoint(root, arm, print_fn)
+            progressed = after is not None and (restore is None or after[1] > restore[1])
+            attempt = 1 if progressed else attempt + 1
         if record['status'] != 'done':
             failed = code or 1
-            print_fn(f'=== {arm}: failed {RETRIES + 1} times, moving on to the next arm', flush=True)
+            print_fn(f'=== {arm}: failed {RETRIES + 1} times without progress, moving on to the next arm', flush=True)
     print_fn('=== all arms done' if not failed else '=== finished with failed arms', flush=True)
     return failed
 

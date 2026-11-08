@@ -372,7 +372,9 @@ def train_online(config):
                 print(f'Pose jump at env step {env_step}: odometry reset or the robot was carried. Point Spot at '
                       'the AprilTag, run `spot` and answer r to resume.', flush=True)
                 raise SystemExit(3)  # spot_session.POSE_JUMP_EXIT: the runner stops instead of retrying
-            retake_control(env.client)
+            retake_control(env.client, link_lost=env.link_lost)
+            # Not running time: from the failed step's start until Spot stands again under our control.
+            online.exclude(time.time() - last_info['wall_time'])
 
     def store_transition(ob, action, next_ob, terminal, info, ep_steps):
         if FLAGS.mapless and info['jump']:

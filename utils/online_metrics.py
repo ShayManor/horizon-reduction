@@ -10,7 +10,9 @@ class OnlineMetrics:
 
     def __init__(self, control_period):
         self.control_period = control_period
-        self.started = time.perf_counter()
+        # Running time starts at this process's first step, so startup, the walk back after a resume and
+        # `exclude`d waits for the robot never count. `carried` is the running time of earlier processes.
+        self.started, self.excluded, self.carried = None, 0.0, 0.0
         for k in COUNTERS:
             setattr(self, k, 0)
         self._reset_window()
@@ -19,6 +21,8 @@ class OnlineMetrics:
         self.act_ms, self.update_ms, self.overruns, self.window_steps = [], [], 0, 0
 
     def on_step(self, info, act_ms=None):
+        if self.started is None:
+            self.started = time.perf_counter()
         self.env_steps += 1
         self.window_steps += 1
         self.metres += info['step_metres']
@@ -37,12 +41,22 @@ class OnlineMetrics:
         if outcome in ('reached', 'timeout', 'stuck'):
             setattr(self, outcome, getattr(self, outcome) + 1)
 
+    def exclude(self, seconds):
+        """Take `seconds` of waiting (link loss, retaking control) out of the running time."""
+        self.excluded += seconds
+
+    def wall_time(self):
+        if self.started is None:
+            return self.carried
+        return self.carried + time.perf_counter() - self.started - self.excluded
+
     def state_dict(self):
-        return {k: getattr(self, k) for k in COUNTERS}
+        return dict({k: getattr(self, k) for k in COUNTERS}, wall_time=self.wall_time())
 
     def load_state_dict(self, state):
         for k in COUNTERS:
             setattr(self, k, state[k])
+        self.carried = state.get('wall_time', 0.0)  # checkpoints from before it was saved restart at 0
 
     def summary(self, sampler_stats, coverage):
         def stat(xs, q=None):  # an empty window (no actor in warmup, no update before it) is NaN, so the CSV header holds
@@ -50,7 +64,7 @@ class OnlineMetrics:
 
         out = {
             'progress/env_steps': self.env_steps,
-            'progress/wall_time': time.perf_counter() - self.started,
+            'progress/wall_time': self.wall_time(),
             'progress/metres': self.metres,
             'progress/updates': self.updates,
             'time/update_ms': stat(self.update_ms),
