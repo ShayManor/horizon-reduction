@@ -424,6 +424,7 @@ def run_session(root, hostname, make_client, input_fn=input, print_fn=print, lau
             print_fn('WARNING: end and start are under 1 m apart, so one step can reach both goals.')
     else:
         print_fn(f'Resuming: end {session["end_tag"][:2]}, start {session["start_tag"][:2]} (tag frame)')
+    session['tag_id'] = tag_id  # a resume with tag_id cleared to null switches to the tag found now
     session['tag_pose'] = list(tag_pose)  # vision frame on the robot, grid frame in the sim
     session['hostname'] = hostname
     save_session(path, session)
